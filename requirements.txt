@@ -1,0 +1,24 @@
+# 核心框架
+langchain>=0.1.0
+langgraph>=0.0.20
+pydantic>=2.0.0
+
+# LLM 相关
+openai>=1.0.0
+langchain-openai>=0.0.5
+langchain-anthropic>=0.0.8
+
+# 异步支持
+aiofiles>=23.0.0
+httpx>=0.25.0
+
+# 工具类
+python-dotenv>=1.0.0
+pyyaml>=6.0
+rich>=13.0.0  # 美化终端输出
+
+# 日志
+loguru>=0.7.0
+
+# 文件处理
+watchdog>=3.0.0  # 文件监控

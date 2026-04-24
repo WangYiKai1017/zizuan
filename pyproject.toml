@@ -1,0 +1,26 @@
+[project]
+name = "elder-memoir-agent"
+version = "0.1.0"
+description = "老人自传创作 Agent 系统"
+authors = [{name = "Your Name", email = "your@email.com"}]
+requires-python = ">=3.10"
+
+[project.optional-dependencies]
+dev = ["pytest", "black", "isort", "flake8", "mypy"]
+
+[tool.black]
+line-length = 88
+target-version = ['py310']
+
+[tool.isort]
+profile = "black"
+line_length = 88
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
