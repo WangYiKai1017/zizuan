@@ -1,5 +1,5 @@
 # src/services/question_generator.py
-from typing import List, Optional
+from typing import List, Optional, Dict
 import logging
 
 from src.services.llm_service import LLMService, get_llm_service
@@ -41,6 +41,7 @@ class QuestionGenerator:
         emotion: EmotionResult,
         memory: MemoryQueryResult,
         state: SessionState,
+        conversation_history: Optional[List[Dict]] = None,
     ) -> str:
         """
         生成下一个问题
@@ -58,7 +59,7 @@ class QuestionGenerator:
         
         # 1. 情绪响应优先
         if emotion.needs_special_handling:
-            return await self._generate_emotion_response(user_input, emotion)
+            return await self._generate_emotion_response(user_input, emotion, conversation_history)
         
         # 2. 待追问问题
         if state.has_pending_questions():
@@ -75,6 +76,7 @@ class QuestionGenerator:
         self,
         user_input: str,
         emotion: EmotionResult,
+        conversation_history: Optional[List[Dict]] = None,
     ) -> str:
         """生成情绪响应"""
         result = await self.llm_service.invoke_with_template(
@@ -85,6 +87,7 @@ class QuestionGenerator:
                 "emotion_intensity": emotion.intensity,
                 "suggested_action": emotion.suggested_action,
             },
+            history=conversation_history  # 传递对话历史
         )
         
         if result.success:
@@ -200,3 +203,51 @@ class QuestionGenerator:
             PhaseType.ELDERLY: "退休后的生活和想象中一样吗？",
         }
         return defaults.get(phase, "能讲讲您的经历吗？")
+    
+    async def generate_next(
+        self,
+        user_input: str,
+        memory_context: Optional[str] = None,
+        conversation_history: Optional[List[Dict]] = None,
+    ) -> str:
+        """
+        生成下一个问题（InterviewAgent专用接口）
+        
+        Args:
+            user_input: 用户输入
+            memory_context: 记忆上下文
+            conversation_history: 对话历史
+            
+        Returns:
+            下一个问题文本
+        """
+        # 构建问题生成prompt
+        prompt = f"""## 任务
+        基于用户的回答和记忆上下文，生成一个自然、连贯的下一个问题。
+        
+        ## 用户回答
+        {user_input}
+        
+        ## 记忆上下文
+        {memory_context or "无"}
+        
+        ## 要求
+        1. 问题要自然、流畅，与用户的回答相关
+        2. 问题要引导用户继续分享更深入的信息
+        3. 使用温和、亲切的语气
+        4. 不要重复用户已经回答过的问题
+        5. 只输出问题，不要其他内容
+        """
+        
+        # 调用LLM生成问题，传递对话历史
+        result = await self.llm_service.invoke(
+            prompt=prompt,
+            temperature=0.7,
+            history=conversation_history  # 传递对话历史
+        )
+        
+        if result.success:
+            return result.content.strip()
+        else:
+            # 降级：使用默认问题
+            return "您能再详细说说吗？"

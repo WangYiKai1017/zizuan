@@ -58,14 +58,24 @@ class MarkdownFileManager:
             base_path = str(temp_path)
         
         # 生成或使用提供的对话ID
-        self.conversation_id = conversation_id or str(uuid.uuid4())[:8]
+        if conversation_id:
+            # 使用提供的对话ID
+            self.conversation_id = conversation_id
+            # 完整的存储路径：memory/{conversation_id}
+            self.base_path = Path(base_path) / self.conversation_id
+            logger.info(f"Initializing MarkdownFileManager for conversation {self.conversation_id} at {self.base_path}")
+            self._ensure_directory_structure()
+        else:
+            # 未提供对话ID，直接使用base_path
+            self.base_path = Path(base_path)
+            logger.info(f"Using base path directly: {self.base_path}")
+            self._ensure_directory_structure()
+
+        print("*" * 30)
+        print("初始化部分")
+        print(self.base_path)
+        print("*" * 30)
         
-        # 完整的存储路径：memory/{conversation_id}
-        self.base_path = Path(base_path) / self.conversation_id
-        
-        logger.info(f"Initializing MarkdownFileManager for conversation {self.conversation_id} at {self.base_path}")
-        
-        self._ensure_directory_structure()
     
     def _ensure_directory_structure(self) -> None:
         """确保目录结构存在"""
@@ -140,9 +150,13 @@ class MarkdownFileManager:
         """
         file_path = self.base_path / relative_path
         
-        if file_path.exists() and not overwrite:
-            logger.warning(f"File already exists: {file_path}")
-            return str(file_path)
+        if file_path.exists():
+            if not overwrite:
+                logger.warning(f"File already exists: {file_path}, use append mode instead of overwrite")
+                # 如果文件已存在且不允许覆盖，使用追加模式
+                return await self.update_file(relative_path, content, append=True)
+            else:
+                logger.warning(f"Overwriting existing file: {file_path}")
         
         # 确保父目录存在
         file_path.parent.mkdir(parents=True, exist_ok=True)
@@ -154,41 +168,61 @@ class MarkdownFileManager:
         logger.info(f"Created file: {file_path}")
         return str(file_path)
     
-    async def read_file(self, relative_path: str) -> str:
+    async def read_file(self, path: str) -> str:
         """
         读取md文件（异步版本）
         
         Args:
-            relative_path: 相对路径
+            path: 可以是相对路径（相对于base_path）或绝对路径
             
         Returns:
             文件内容
         """
-        file_path = self.base_path / relative_path
+        # 检查是否为绝对路径
+
+        if os.path.isabs(path):
+            file_path = Path(path)
+        else:
+            file_path = self.base_path / path
         
         if not file_path.exists():
             raise FileNotFoundError(f"File not found: {file_path}")
         
+        print("*" * 30)
+        print("读取文件async")
+        print(file_path)
+        print("*" * 30)
+
         async with aiofiles.open(file_path, 'r', encoding='utf-8') as f:
             content = await f.read()
         
         return content
     
-    def read_file_sync(self, relative_path: str) -> str:
+    def read_file_sync(self, path: str) -> str:
         """
         读取md文件（同步版本）
         
         Args:
-            relative_path: 相对路径
+            path: 可以是相对路径（相对于base_path）或绝对路径
             
         Returns:
             文件内容
         """
-        file_path = self.base_path / relative_path
+
+        # 检查是否为绝对路径
+        if os.path.isabs(path):
+            file_path = Path(path)
+        else:
+            file_path = self.base_path / path
         
         if not file_path.exists():
             raise FileNotFoundError(f"File not found: {file_path}")
         
+        print("*" * 30)
+        print("读取文件sync")
+        print(file_path)
+        print("*" * 30)
+
         with open(file_path, 'r', encoding='utf-8') as f:
             content = f.read()
         
@@ -419,20 +453,22 @@ class MarkdownFileManager:
         
         # 如果是绝对路径（以/开头），直接返回
         if target.startswith('/'):
-            return target[1:].replace(os.path.sep, '/')  # 去掉开头的/
+            resolved_path = target[1:].replace(os.path.sep, '/')  # 去掉开头的/
         
         # 如果是相对路径，基于source_path解析
-        if source_path:
-            # 构建源文件的绝对路径
-            source_abs_path = self.base_path / source_path
-            # 解析相对路径
-            resolved = (source_abs_path.parent / target).resolve()
-            # 获取相对于base_path的路径
-            relative_path = str(resolved.relative_to(self.base_path))
-            return relative_path.replace(os.path.sep, '/')
+        elif source_path:
+            # 构建源文件的父目录路径
+            source_dir = os.path.dirname(source_path) if os.path.dirname(source_path) else '.'
+            # 组合路径
+            combined_path = os.path.normpath(os.path.join(source_dir, target))
+            # 确保使用正斜杠
+            resolved_path = combined_path.replace(os.path.sep, '/')
         
         # 如果没有source_path，直接返回target
-        return target.replace(os.path.sep, '/')
+        else:
+            resolved_path = target.replace(os.path.sep, '/')
+        
+        return resolved_path
     
     # ========== 工具方法 ==========
     

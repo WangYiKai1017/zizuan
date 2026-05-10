@@ -28,14 +28,15 @@ async def test_knowledge_base_querier_with_target_path():
     
     try:
         # 设置测试环境
-        temp_dir = "C:\\Users\\MSI\\AppData\\Local\\Temp\\memory\\a598d251"
+        temp_dir = "/Users/yikaiwang/Documents/trae_projects/zizhuan/knowledge_base"
         
         # 创建LLM配置
-        llm_config = LLMConfig.from_env()
+        # llm_config = LLMConfig.from_env()
+        llm_config = LLMConfig.from_env_deepseek()
         llm_service = LLMService(llm_config)
         
         # 创建文件管理器
-        file_manager = MarkdownFileManager(base_path=temp_dir, conversation_id="a598d251")
+        file_manager = MarkdownFileManager(base_path=temp_dir, conversation_id="test")
         
         # 创建知识库查询器
         querier = KnowledgeBaseQuerier(file_manager, llm_service)

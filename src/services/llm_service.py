@@ -100,6 +100,15 @@ class LLMService:
                 api_key=model_config.api_key,
                 base_url=model_config.base_url,
             )
+        elif model_config.provider in ["deepseek"]:
+            self._model = ChatOpenAI(
+                model=model_config.model_name,
+                temperature=model_config.temperature,
+                max_tokens=model_config.max_tokens,
+                api_key=model_config.api_key,
+                base_url=model_config.base_url,
+                extra_body={"thinking": {"type": "disabled"}}
+            )
         elif model_config.provider == "anthropic":
             # 动态导入，只在需要时加载
             from langchain_anthropic import ChatAnthropic
@@ -217,6 +226,7 @@ class LLMService:
         self,
         prompt: str,
         system_prompt: Optional[str] = None,
+        history: Optional[List[Dict[str, str]]] = None,
         **kwargs
     ) -> LLMCallResult:
         """
@@ -225,6 +235,7 @@ class LLMService:
         Args:
             prompt: 用户提示
             system_prompt: 系统提示（可选）
+            history: 对话历史（可选），格式：[{"role": "user/assistant", "content": "消息内容"}]
             **kwargs: 额外参数
             
         Returns:
@@ -235,13 +246,23 @@ class LLMService:
         try:
             # 构建消息
             messages = []
+            
+            # 添加系统提示
             if system_prompt:
                 messages.append(SystemMessage(content=system_prompt))
+            
+            # 添加对话历史
+            if history:
+                for turn in history:
+                    if turn["role"] == "user":
+                        messages.append(HumanMessage(content=turn["content"]))
+                    elif turn["role"] == "assistant":
+                        messages.append(AIMessage(content=turn["content"]))
+            
+            # 添加当前用户输入
             messages.append(HumanMessage(content=prompt))
             
             # 调用模型（带重试）
-
-            # raise ValueError("Not implemented")
             response = await self._invoke_with_retry(messages, **kwargs)
             
             # 记录结果
@@ -273,6 +294,7 @@ class LLMService:
         self,
         template_name: str,
         variables: Dict[str, Any],
+        history: Optional[List[Dict[str, str]]] = None,
         **kwargs
     ) -> LLMCallResult:
         """
@@ -281,6 +303,7 @@ class LLMService:
         Args:
             template_name: 模板名称
             variables: 模板变量
+            history: 对话历史（可选），格式：[{"role": "user/assistant", "content": "消息内容"}]
             **kwargs: 额外参数
             
         Returns:
@@ -297,6 +320,7 @@ class LLMService:
         return await self.invoke(
             prompt=prompt,
             system_prompt=template.system_prompt,
+            history=history,
             **kwargs
         )
     

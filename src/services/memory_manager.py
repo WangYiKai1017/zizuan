@@ -216,10 +216,10 @@ class MemoryManager:
         lines = []
         for i, turn in enumerate(turns, 1):
             lines.append(f"### 第 {i} 轮")
-            lines.append(f"时间：{turn.timestamp.strftime('%H:%M:%S')}")
-            lines.append(f"用户：{turn.user_input}")
-            if turn.agent_response:
-                lines.append(f"助手：{turn.agent_response}")
+            lines.append(f"时间：{turn["timestamp"]}")
+            lines.append(f"用户：{turn["user_input"]}")
+            if "agent_response" in turn.keys():
+                lines.append(f"助手：{turn["agent_response"]}")
             lines.append("")
         return "\n".join(lines)
     

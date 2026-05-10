@@ -21,6 +21,22 @@
 2. **事件维度**：提取完整的事件记录
 3. **人物维度**：识别并完善人物画像
 
+## 特殊场景处理
+
+### 1. 主人公场景
+- 需包含主人公详细信息（姓名、年龄、职业、家庭状况等）
+- 主人公信息文档与index.md放置于同一目录（根目录）
+- 严格按照知识库组织架构：
+  - 事件：按人生阶段分类（childhood/youth/young_adult/middle_age/elderly）
+  - 人物：按关系分类（family/friends/colleagues/others）
+  - 时间线：按人生阶段分类
+
+### 2. 对话记录场景
+- 创建专用文档存储历史对话记录
+- 对话记录文档命名格式：`conversation_YYYY-MM-DD_HH-MM-SS.md`
+- 存储路径：`/Users/yikaiwang/Documents/trae_projects/zizhuan/knowledge_base/conversations/`
+- 记录格式：包含时间戳、角色和内容
+
 ## 输入信息
 
 ### 采访对话内容
@@ -34,6 +50,9 @@
 
 ### 当前人生阶段
 {current_phase}
+
+### 主人公基础信息（如果有）
+{protagonist_basic_info}
 
 ## 整理原则
 
@@ -149,7 +168,8 @@
         "person_id": "string",
         "suggested_path": "string (建议的存储路径)"
       }
-    ]
+    ],
+    "conversation_file": "string (建议保存的对话记录文件路径)"
   },
   
   "processing_summary": {
@@ -188,16 +208,29 @@
 
 ```python
 def _format_conversation_content(self, turns: List[ConversationTurn]) -> str:
-    """格式化对话内容"""
-    lines = []
-    for i, turn in enumerate(turns, 1):
-        lines.append(f"### 第 {i} 轮")
-        lines.append(f"时间：{turn.timestamp.strftime('%H:%M:%S')}")
-        lines.append(f"用户：{turn.user_input}")
-        if turn.agent_response:
-            lines.append(f"助手：{turn.agent_response}")
-        lines.append("")
-    return "\n".join(lines)
+        """格式化对话内容"""
+        lines = []
+        for i, turn in enumerate(turns, 1):
+            lines.append(f"### 第 {i} 轮")
+            lines.append(f"时间：{turn.timestamp.strftime('%H:%M:%S')}")
+            lines.append(f"用户：{turn.user_input}")
+            if turn.agent_response:
+                lines.append(f"助手：{turn.agent_response}")
+            lines.append("")
+        return "\n".join(lines)
+    
+    def _format_protagonist_info(self) -> str:
+        """格式化主人公基础信息"""
+        protagonist = self.repository.get_person("protagonist")
+        if protagonist:
+            info = []
+            info.append(f"姓名：{protagonist.name}")
+            info.append(f"年龄：{protagonist.age}")
+            info.append(f"职业：{protagonist.occupation}")
+            info.append(f"家庭状况：{protagonist.family_status}")
+            info.append(f"居住情况：{protagonist.living_arrangement}")
+            return "\n".join(info)
+        return "（暂无主人公信息）"
 ```
 
 #### existing_timeline
@@ -284,6 +317,7 @@ class MemoryManager:
             "existing_timeline": self._format_existing_timeline(self.repository),
             "existing_people": self._format_existing_people(self.repository),
             "current_phase": PHASE_LABELS.get(current_phase, str(current_phase)),
+            "protagonist_basic_info": self._format_protagonist_info(),
         }
         
         # 2. 调用 LLM 整理

@@ -44,10 +44,10 @@ class KnowledgeBaseTools:
         import os
         full_path = os.path.normpath(os.path.join(self._current_target_path, relative_path))
         
-        # 验证路径是否在目标路径范围内
-        if not full_path.startswith(os.path.normpath(self._current_target_path)):
-            logger.warning(f"Path traversal attempt: {relative_path}")
-            return self._current_target_path
+        # # 验证路径是否在目标路径范围内
+        # if not full_path.startswith(os.path.normpath(self._current_target_path)):
+        #     logger.warning(f"Path traversal attempt: {relative_path}")
+        #     return self._current_target_path
         
         return full_path
     
@@ -96,15 +96,16 @@ class KnowledgeBaseTools:
         def read_file(file_path: str) -> str:
             """读取指定文件的内容"""
             try:
-                full_path = self.get_full_path(file_path)
+                # full_path = self.get_full_path(file_path)
+                # raise Exception(f"read_file: {full_path}, {file_path}")
                 # 异步版本
                 # content = asyncio.run(self.file_manager.read_file(full_path))
                 # 使用同步版本的read_file_sync避免事件循环问题
-                content = self.file_manager.read_file_sync(full_path)
+                content = self.file_manager.read_file_sync(file_path)
                 return content 
             except Exception as e:
                 logger.error(f"Error in read_file: {e}")
-                return f"无法读取文件:{full_path}"
+                return f"无法读取文件:{file_path}，错误信息：{str(e)}"
         
         @tool
         def search_content(keyword: str, limit: int = 10) -> str:

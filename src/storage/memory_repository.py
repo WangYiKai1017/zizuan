@@ -3,9 +3,12 @@ from collections import OrderedDict
 from datetime import datetime
 import json
 import logging
+import os
 
 from src.storage.markdown_file_manager import MarkdownFileManager
-from src.models import EventInfo, PersonInfo
+from src.services.knowledge_base_querier import KnowledgeBaseQuerier
+from src.services.llm_service import get_llm_service
+from src.models import EventInfo, PersonInfo, SessionState
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +78,13 @@ class MemoryRepository:
         # 画像记忆（内存索引）
         self._profile_index: Dict[str, PersonInfo] = {}
         self._event_index: Dict[str, EventInfo] = {}
+        
+        # 知识库查询者
+        self.llm_service = get_llm_service()
+        self.knowledge_base_querier = KnowledgeBaseQuerier(
+            file_manager=self.file_manager,
+            llm_service=self.llm_service
+        )
     
     # ========== 短期记忆 ==========
     
@@ -97,6 +107,58 @@ class MemoryRepository:
         # 保持容量限制
         if len(self._short_term_history) > self._short_term_capacity:
             self._short_term_history.pop(0)
+    
+    async def get_latest_conversation_records(self, user_id: str, n: Optional[int] = None) -> List[Dict[str, Any]]:
+        """
+        从知识库中获取最新的对话记录
+        
+        Args:
+            user_id: 用户ID
+            n: 返回最近的n条记录（如果为None，则返回所有记录）
+            
+        Returns:
+            对话历史记录列表
+        """
+        try:
+            # 列出用户知识库目录下的所有JSON文件
+            files = self.file_manager.list_files(include_details=True, recursive=True)
+            conversation_files = []
+            
+            for file in files:
+                if file["is_file"] and file["name"].startswith("conversation_") and file["name"].endswith(".json"):
+                    conversation_files.append(file)
+            
+            if not conversation_files:
+                return []
+            
+            # 从文件名中提取时间戳进行排序，文件名格式为 conversation_YYYY-MM-DD_HH-MM-SS.json
+            def extract_timestamp(file):
+                file_name = file["name"]
+                # 提取 YYYY-MM-DD_HH-MM-SS 部分
+                timestamp_str = file_name.replace("conversation_", "").replace(".json", "")
+                try:
+                    # 转换为 datetime 对象
+                    return datetime.strptime(timestamp_str, "%Y-%m-%d_%H-%M-%S")
+                except ValueError:
+                    # 如果文件名格式不正确，使用文件的修改时间
+                    return datetime.fromisoformat(file["modified"])
+            
+            # 按时间戳排序，找到最新的对话记录文件
+            conversation_files.sort(key=extract_timestamp, reverse=True)
+            latest_file = conversation_files[0]
+            
+            # 读取最新的对话记录文件
+            file_content = self.file_manager.read_file_sync(latest_file["path"])
+            conversation_history = json.loads(file_content)
+            
+            # 如果指定了n，返回最近的n条记录
+            if n:
+                return conversation_history[-n:]
+            
+            return conversation_history
+        except Exception as e:
+            logger.error(f"Failed to get latest conversation records: {e}")
+            return []
     
     def get_history(self, n: Optional[int] = None) -> List[Dict[str, Any]]:
         """获取对话历史"""

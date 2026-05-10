@@ -59,6 +59,46 @@ class LLMConfig(BaseModel):
         else:
             raise ValueError("未配置Qwen专属API密钥或URL")
         
+    @classmethod
+    def from_env_qwen(cls) -> "LLMConfig":
+        """从环境变量加载配置，优先使用QWEN专属配置"""
+        # 优先检查Qwen专属配置
+        qwen_url = os.getenv("QWEN_URL")
+        qwen_apikey = os.getenv("QWEN_APIKEY")
+        
+        if qwen_url and qwen_apikey:
+            return cls(
+                provider="qwen",
+                model_name=os.getenv("LLM_MODEL_NAME", "qwen-max"),
+                api_key=qwen_apikey,
+                base_url=qwen_url,
+                temperature=float(os.getenv("LLM_TEMPERATURE", "0.7")),
+                max_tokens=int(os.getenv("LLM_MAX_TOKENS", "4096")),
+            )
+        
+        else:
+            raise ValueError("未配置Qwen专属API密钥或URL")
+        
+    @classmethod
+    def from_env_deepseek(cls) -> "LLMConfig":
+        """从环境变量加载配置，使用Deepseek专属配置"""
+        # 优先检查Deepseek专属配置
+        deepseek_url = os.getenv("DEEPSEEK_URL")
+        deepseek_apikey = os.getenv("DEEPSEEK_APIKEY")
+        
+        if deepseek_url and deepseek_apikey:
+            return cls(
+                provider="deepseek",
+                model_name=os.getenv("DEEPSEEK_MODEL_NAME", "deepseek-v4-flash"),
+                api_key=deepseek_apikey,
+                base_url=deepseek_url,
+                temperature=float(os.getenv("LLM_TEMPERATURE", "0.7")),
+                max_tokens=int(os.getenv("LLM_MAX_TOKENS", "4096")),
+            )
+        
+        else:
+            raise ValueError("未配置Deepseek专属API密钥或URL")
+        
         # 否则使用通用配置
         # return cls(
         #     provider=os.getenv("LLM_PROVIDER", "openai"),
@@ -71,5 +111,10 @@ class LLMConfig(BaseModel):
 
 
 def get_default_config() -> LLMConfig:
-    """获取默认配置"""
-    return LLMConfig.from_env()
+    """获取默认配置，优先使用DeepSeek模型"""
+    try:
+        # 优先尝试DeepSeek配置
+        return LLMConfig.from_env_deepseek()
+    except ValueError:
+        # 如果DeepSeek配置失败，回退到Qwen
+        return LLMConfig.from_env()

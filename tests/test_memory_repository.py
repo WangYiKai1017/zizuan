@@ -1,6 +1,7 @@
 import pytest
 import tempfile
 import os
+import json
 from src.storage.memory_repository import MemoryRepository, LRUCache
 from src.storage.markdown_file_manager import MarkdownFileManager
 from src.models import EventInfo, PersonInfo
@@ -263,3 +264,62 @@ class TestMemoryRepository:
         assert people[0].person_id == "p001"
         assert len(events) == 1
         assert events[0].event_id == "e001"
+
+    @pytest.mark.asyncio
+    async def test_get_latest_conversation_records(self):
+        # 创建临时目录
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # 创建用户目录
+            user_id = "test_user002"
+            user_dir = os.path.join(tmpdir, user_id)
+            os.makedirs(user_dir)
+            
+            # 创建对话记录文件
+            conversation_content = [
+                {"role": "assistant", "content": "您好！", "timestamp": "2026-04-26T12:41:02.701192"},
+                {"role": "user", "content": "我叫寇治协", "timestamp": "2026-04-26T12:41:13.828976"},
+                {"role": "assistant", "content": "寇治协老先生，您好！", "timestamp": "2026-04-26T12:41:13.828980"},
+                {"role": "user", "content": "不对,1933出生,今年93岁", "timestamp": "2026-04-26T12:42:19.755259"},
+                {"role": "assistant", "content": "好的，我已经了解了您的基本情况。", "timestamp": "2026-04-26T12:42:19.755263"}
+            ]
+            
+            conversation_file = os.path.join(user_dir, "conversation_2026-04-26_12-53-05.json")
+            with open(conversation_file, "w", encoding="utf-8") as f:
+                json.dump(conversation_content, f, ensure_ascii=False)
+            
+            # 创建一个旧的对话记录文件
+            old_conversation_content = [
+                {"role": "assistant", "content": "上次的对话", "timestamp": "2026-04-25T12:00:00.000000"},
+                {"role": "user", "content": "上次的回答", "timestamp": "2026-04-25T12:01:00.000000"}
+            ]
+            
+            old_conversation_file = os.path.join(user_dir, "conversation_2026-04-25_12-01-00.json")
+            with open(old_conversation_file, "w", encoding="utf-8") as f:
+                json.dump(old_conversation_content, f, ensure_ascii=False)
+            
+            # 初始化MemoryRepository
+            fm = MarkdownFileManager(tmpdir, conversation_id=user_id)
+            repository = MemoryRepository(fm)
+            
+            # 测试获取所有对话记录
+            all_records = await repository.get_latest_conversation_records(user_id)
+            assert len(all_records) == 5
+            assert all_records[0]["content"] == "您好！"
+            assert all_records[-1]["content"] == "好的，我已经了解了您的基本情况。"
+            
+            # 测试获取最近2条记录
+            recent_records = await repository.get_latest_conversation_records(user_id, 2)
+            assert len(recent_records) == 2
+            assert recent_records[0]["content"] == "不对,1933出生,今年93岁"
+            assert recent_records[1]["content"] == "好的，我已经了解了您的基本情况。"
+            
+            # 测试没有对话记录的情况
+            empty_user_id = "empty_user"
+            empty_user_dir = os.path.join(tmpdir, empty_user_id)
+            os.makedirs(empty_user_dir)
+            
+            empty_fm = MarkdownFileManager(tmpdir, conversation_id=empty_user_id)
+            empty_repository = MemoryRepository(empty_fm)
+            
+            empty_records = await empty_repository.get_latest_conversation_records(empty_user_id)
+            assert len(empty_records) == 0
