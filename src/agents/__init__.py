@@ -1,3 +1,5 @@
 from .profile_collection_agent import ProfileCollectionAgent
 from .interview_agent import InterviewAgent
 from .interview_session_agent import InterviewSessionAgent, SessionPhase
+from .kb_organizer_agent import KBOrganizerAgent
+from .kb_organizer_graph import build_kb_organizer_graph

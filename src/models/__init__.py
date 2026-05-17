@@ -18,6 +18,13 @@ from .handoff_package import (
     CollectedData
 )
 from .agent_response import AgentResponse
+from .kb_organizer_state import (
+    KBOrganizerState,
+    OrganizerTask,
+    ConflictItem,
+    MergeRecord,
+    TaskStatus,
+)
 from .organized_memory import (
     OrganizedMemory,
     TimelineUpdate,
@@ -77,7 +84,14 @@ __all__ = [
     "StorageSuggestions",
     "ProcessingSummary",
     
+    # 知识库整理相关
+    "KBOrganizerState",
+    "OrganizerTask",
+    "ConflictItem",
+    "MergeRecord",
+    
     # 枚举类型
+    "TaskStatus",
     "TimeType",
     "EventType",
     "Importance",

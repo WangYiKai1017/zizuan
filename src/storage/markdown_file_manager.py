@@ -463,6 +463,15 @@ class MarkdownFileManager:
             combined_path = os.path.normpath(os.path.join(source_dir, target))
             # 确保使用正斜杠
             resolved_path = combined_path.replace(os.path.sep, '/')
+
+            # Fallback: if the resolved path doesn't exist, try resolving from KB root.
+            # This handles the convention where '../' means "go to KB root" regardless of depth.
+            if not self.file_exists(resolved_path):
+                stripped = target
+                while stripped.startswith('../'):
+                    stripped = stripped[3:]
+                if self.file_exists(stripped):
+                    resolved_path = stripped
         
         # 如果没有source_path，直接返回target
         else:
