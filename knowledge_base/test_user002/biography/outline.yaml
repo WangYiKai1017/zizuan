@@ -1,0 +1,90 @@
+title: 我的人生故事
+author: test_user001
+style: first_person_oral
+version: 1
+last_updated: '2026-05-13T22:57:36.163633'
+chapters:
+- id: ch01
+  title: 那棵老槐树下的书声
+  life_stage: childhood
+  theme: 家庭与亲情、文化启蒙
+  status: written
+  source_materials:
+  - events/elderly/出生.md
+  - events/elderly/幼年跟随父亲在学堂旁听.md
+  - events/elderly/童年农活与学习.md
+  - people/family/父亲.md
+  - people/family/母亲.md
+  - people/others/姐姐-名字不详-.md
+  - people/others/寇治协.md
+  summary: 我出生在一个普通的农家，父亲是村里的教书先生。我的童年记忆，是从父亲那间简陋的学堂开始的。白天，我跟着姐姐帮母亲干农活；傍晚，父亲会偷偷教我们念《三字经》。那段时光虽苦，但父亲的教诲像种子一样，悄悄在我心里扎下了根。
+  confirmed_at: '2026-05-13T22:53:41.568588'
+  written_at: '2026-05-13T22:54:28.457343'
+- id: ch02
+  title: 炮火中的童年
+  life_stage: childhood
+  theme: 困境与韧性、时代变迁与个人命运
+  status: written
+  source_materials:
+  - events/elderly/战乱童年.md
+  - events/elderly/日本侵华期间教育被迫中断.md
+  - events/elderly/与游击队联系.md
+  - people/others/寇治协.md
+  summary: 日本人的铁蹄踏进了我们的村庄，学堂关了门，父亲再也不敢公开教我们读书。我亲眼看着村子在炮火中颤抖，也第一次听说了游击队的故事。那些在黑夜中悄悄进村的身影，让我幼小的心灵里，埋下了一颗反抗的种子。
+  confirmed_at: '2026-05-13T22:53:41.568613'
+  written_at: '2026-05-13T22:55:17.062598'
+- id: ch03
+  title: 十六岁的选择
+  life_stage: youth
+  theme: 个人成长与蜕变、信仰与价值观
+  status: written
+  source_materials:
+  - events/elderly/14岁与王大贞结婚.md
+  - events/elderly/抗战胜利后参军.md
+  - events/elderly/参军成为通信兵.md
+  - people/others/王大贞.md
+  - people/others/寇治协.md
+  summary: 十四岁那年，家里给我娶了媳妇王大贞。可我心里总有个声音在喊：不能就这样过一辈子。抗战胜利的消息传来，我瞒着家人，偷偷报了名。当我穿上那身军装时，心里既激动又忐忑——我不知道前方等着我的是什么，但我知道，我必须去。
+  confirmed_at: '2026-05-13T22:53:41.568618'
+  written_at: '2026-05-13T22:56:00.373328'
+- id: ch04
+  title: 电波里的青春
+  life_stage: youth
+  theme: 个人成长与蜕变、友情与社会关系
+  status: written
+  source_materials:
+  - events/elderly/在指挥部担任最年轻报务员.md
+  - events/elderly/赵大哥教授使用驳壳枪射击.md
+  - events/elderly/赵大哥缴获驳壳枪.md
+  - people/others/赵大哥.md
+  - people/others/首长.md
+  - people/others/保卫排战士.md
+  - people/others/寇治协.md
+  summary: 进了指挥部，我是最小的报务员。第一次戴上耳机时，手都在抖。赵大哥手把手地教我校对密文、打摩尔斯电码，还教我打枪。首长待我像父亲一样，从不因为我年纪小就苛责。在战火中，我一点点褪去了少年的青涩，变成了一个真正的通信兵。
+  confirmed_at: '2026-05-13T22:53:41.568625'
+  written_at: '2026-05-13T22:56:38.083895'
+- id: ch05
+  title: 战火中的成人礼
+  life_stage: youth
+  theme: 困境与韧性、时代变迁与个人命运
+  status: written
+  source_materials:
+  - events/elderly/在战火中成熟.md
+  - events/middle_age/参军担任通信兵.md
+  - people/others/寇治协.md
+  - people/others/首长.md
+  summary: 真正的战场，比我想象的残酷得多。炮火声中，我必须保持冷静，一字不差地传递每一条指令。有一次，敌人的炮弹就在指挥所外炸开，我吓得浑身发抖，但手里的电键却不敢停。那一刻我突然明白，成长不是年龄的增长，而是在恐惧中依然选择坚守。
+  confirmed_at: '2026-05-13T22:53:41.568628'
+  written_at: '2026-05-13T22:57:06.278786'
+- id: ch06
+  title: 回望来路
+  life_stage: elderly
+  theme: 信仰与价值观、时代变迁与个人命运
+  status: written
+  source_materials:
+  - events/elderly/年龄信息核对与修正.md
+  - timeline/life-events.md
+  - people/others/寇治协.md
+  summary: 如今，我已是白发苍苍的老人。坐在院子里晒太阳时，我常常想起那些已经远去的人和事——父亲在油灯下教我认字的背影，赵大哥递给我的那支驳壳枪，还有战场上那些永远留在了年轻时的战友。这一生，我没什么惊天动地的成就，但我无愧于心。
+  confirmed_at: '2026-05-13T22:53:41.568631'
+  written_at: '2026-05-13T22:57:36.163514'
