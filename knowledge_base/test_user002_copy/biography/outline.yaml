@@ -1,0 +1,83 @@
+title: 我的人生故事
+author: test_user002_copy
+style: first_person_oral
+version: 1
+last_updated: '2026-05-20T21:20:55.027154'
+chapters:
+- id: ch01
+  title: 青砖缝里的书声
+  life_stage: childhood
+  theme: 家庭与亲情
+  status: written
+  source_materials:
+  - events/elderly/出生.md
+  - events/elderly/幼年跟随父亲在学堂旁听.md
+  - events/elderly/童年农活与学习.md
+  - events/elderly/战乱童年.md
+  - events/elderly/日本侵华期间教育被迫中断.md
+  - people/family/父亲.md
+  - people/family/母亲.md
+  - people/others/姐姐-名字不详-.md
+  summary: 我出生在硝烟将至的北方小村，父亲在学堂青砖缝里为我念《千字文》，母亲在麦场边教我捆稻穗。炮声渐近时，私塾关了门，可父亲仍点着油灯教我识字——那微光没照见太平，却照亮了我一生认得清自己是谁。
+  confirmed_at: '2026-05-20T21:19:20.484913'
+  written_at: '2026-05-20T21:20:55.027106'
+- id: ch02
+  title: 烽火线上的摩尔斯心跳
+  life_stage: youth
+  theme: 个人成长与蜕变
+  status: draft
+  source_materials:
+  - events/elderly/12岁时开始与游击队打交道.md
+  - events/elderly/14岁与王大贞结婚.md
+  - events/elderly/抗战胜利后参军.md
+  - events/elderly/在指挥部担任最年轻报务员.md
+  - events/elderly/在战火中成熟.md
+  - people/others/赵大哥.md
+  - people/others/首长.md
+  - people/others/王大贞.md
+  summary: 十四岁成婚那日，我还没摸过电键；三个月后，我坐在指挥部地窖里，耳中是炮弹呼啸，指尖是滴答跳动的摩尔斯电码。赵大哥手把手教我调频，首长拍我肩膀说‘稳住’——那一刻我才懂：战士不是扛枪的人，而是让命令穿过硝烟、抵达黎明的人。
+  confirmed_at: null
+  written_at: null
+- id: ch03
+  title: 驳壳枪与发报机之间
+  life_stage: youth
+  theme: 困境与韧性
+  status: draft
+  source_materials:
+  - events/elderly/赵大哥教授使用驳壳枪射击.md
+  - events/elderly/赵大哥缴获驳壳枪.md
+  - events/elderly/参军成为通信兵.md
+  - people/others/保卫排战士.md
+  - timeline/life-events.md
+  summary: 他们让我守在电台旁，不配枪，说‘报务员不用上阵’；可我执意学打驳壳枪，不是为杀敌，是为确认自己也能挡在前面。当第一颗子弹出膛震得我虎口发麻，我忽然明白：真正的韧性，是在被保护的位置上，依然选择挺直脊梁。
+  confirmed_at: null
+  written_at: null
+- id: ch04
+  title: 未寄出的家书
+  life_stage: middle_age
+  theme: 时代变迁与个人命运
+  status: draft
+  source_materials:
+  - events/middle_age/参军担任通信兵.md
+  - people/family/父亲.md
+  - people/family/母亲.md
+  - people/others/赵大哥.md
+  - people/others/首长.md
+  summary: 后来我成了带徒弟的报务组长，可再没写过一封完整的家书——不是没时间，是怕笔尖一软，就泄了十年战壕里攒下的硬气。父亲教我的‘敬惜字纸’，到头来，最敬重的字，是发出去再没回音的密电码。
+  confirmed_at: null
+  written_at: null
+- id: ch05
+  title: 七十九岁校准频率
+  life_stage: elderly
+  theme: 师徒传承与友情
+  status: draft
+  source_materials:
+  - events/elderly/年龄信息核对与修正.md
+  - people/others/王大贞.md
+  - people/others/赵大哥.md
+  - people/others/首长.md
+  - people/family/父亲.md
+  - people/family/母亲.md
+  summary: 去年冬天，我用老式收音机调频，调到一个模糊的短波台——像极了七十年前赵大哥教我听的第一个信号。孙子问我听什么，我说：‘听当年没说完的话。’原来人这一生，不是走向终点，而是把散落的频率，一一生生校准回来。
+  confirmed_at: null
+  written_at: null
