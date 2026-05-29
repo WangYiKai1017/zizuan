@@ -63,7 +63,8 @@ class ProfileCollectionAgent:
     
     def _load_prompt_templates(self) -> Dict[str, str]:
         """从文件加载prompt模板"""
-        prompt_path = "/Users/yikaiwang/Documents/trae_projects/zizhuan/Prompts/ProfileCollection-Prompt.md"
+        from pathlib import Path
+        prompt_path = Path(__file__).resolve().parent.parent.parent / "Prompts" / "ProfileCollection-Prompt.md"
         try:
             with open(prompt_path, 'r', encoding='utf-8') as f:
                 content = f.read()

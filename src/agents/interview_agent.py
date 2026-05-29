@@ -314,8 +314,10 @@ class InterviewAgent:
     
     async def _load_session_end_prompt(self) -> str:
         """加载结束引导Prompt"""
+        from pathlib import Path
+        prompt_path = Path(__file__).resolve().parent.parent.parent / "Prompts" / "SessionEndGuide-Prompt.md"
         try:
-            with open("/Users/yikaiwang/Documents/trae_projects/zizhuan/Prompts/SessionEndGuide-Prompt.md", 'r', encoding='utf-8') as f:
+            with open(prompt_path, 'r', encoding='utf-8') as f:
                 content = f.read()
             # 提取markdown中的代码块内容
             start_idx = content.find("```") + 3

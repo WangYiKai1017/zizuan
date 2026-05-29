@@ -60,8 +60,8 @@ class InterviewSessionAgent:
         self.user_id = user_id
         self.llm_service = llm_service or get_llm_service()
         
-        # 知识库根目录
-        self.knowledge_base_root = Path("/Users/yikaiwang/Documents/trae_projects/zizhuan/knowledge_base")
+        # 知识库根目录（从项目根目录推导）
+        self.knowledge_base_root = Path(__file__).resolve().parent.parent.parent / "knowledge_base"
         
         # 使用用户ID作为conversation_id，直接创建在知识库根目录下
         self.knowledge_base_path = self.knowledge_base_root / self.user_id
