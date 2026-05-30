@@ -60,7 +60,13 @@ async def send_message(request: InterviewMessageRequest):
 
     async def generate():
         try:
-            await runner.handle_message(request.message)
+            candidate_questions = None
+            if request.candidate_questions:
+                candidate_questions = [
+                    {"id": cq.id, "question": cq.question}
+                    for cq in request.candidate_questions
+                ]
+            await runner.handle_message(request.message, candidate_questions=candidate_questions)
         except Exception as ex:
             await emitter.emit_error("AGENT_ERROR", str(ex), recoverable=False)
             await emitter.emit_done()

@@ -1,4 +1,4 @@
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 from datetime import datetime, timedelta
 from enum import Enum
 from pathlib import Path
@@ -6,6 +6,7 @@ import logging
 
 from src.agents.profile_collection_agent import ProfileCollectionAgent
 from src.agents.interview_agent import InterviewAgent
+from src.services.question_generator import QuestionResult
 from src.services.llm_service import LLMService, get_llm_service
 from src.services.memory_manager import MemoryManager
 from src.services.knowledge_base_querier import KnowledgeBaseQuerier
@@ -268,30 +269,42 @@ class InterviewSessionAgent:
         
         return welcome_message
     
-    async def handle_user_input(self, user_input: str) -> str:
+    async def handle_user_input(
+        self,
+        user_input: str,
+        candidate_questions: Optional[List[Dict[str, str]]] = None,
+    ) -> QuestionResult:
         """
         处理用户输入
-        
+
         根据当前阶段分发给对应的子Agent
         """
         if self.phase == SessionPhase.PROFILE_COLLECTION:
             return await self._handle_profile_input(user_input)
         elif self.phase == SessionPhase.INTERVIEW:
-            return await self._handle_interview_input(user_input)
+            return await self._handle_interview_input(user_input, candidate_questions)
         elif self.phase == SessionPhase.ENDING:
             return await self._handle_ending_input(user_input)
         else:
-            return "会话已结束，期待下次再聊。"
+            return QuestionResult(
+                question="会话已结束，期待下次再聊。",
+                source="generated",
+                candidate_question_id=None,
+            )
     
-    async def _handle_profile_input(self, user_input: str) -> str:
+    async def _handle_profile_input(self, user_input: str) -> QuestionResult:
         """处理初始化阶段的用户输入"""
         response = await self.profile_agent.handle_input(user_input)
-        
+
         # 检查是否完成初始化
         if self.profile_agent.is_completed:
             await self._on_profile_complete()
-        
-        return response
+
+        return QuestionResult(
+            question=response,
+            source="generated",
+            candidate_question_id=None,
+        )
     
     async def _on_profile_complete(self):
         """
@@ -338,11 +351,15 @@ class InterviewSessionAgent:
         
         self.phase = SessionPhase.INTERVIEW
     
-    async def _handle_interview_input(self, user_input: str) -> str:
+    async def _handle_interview_input(
+        self,
+        user_input: str,
+        candidate_questions: Optional[List[Dict[str, str]]] = None,
+    ) -> QuestionResult:
         """处理采访阶段的用户输入"""
         # 检查时间限制
         elapsed = self._get_elapsed_minutes()
-        
+
         # 检查是否达到前五分钟，触发归档
         if not self.five_minute_archived and elapsed >= 5:
             logger.info(f"达到前五分钟，触发归档，已用时间：{elapsed:.1f}分钟")
@@ -352,19 +369,40 @@ class InterviewSessionAgent:
                 session_summary="前五分钟对话存档"
             )
             self.five_minute_archived = True
-        
+
         if elapsed >= self.total_duration_minutes:
             # 超时，进入结束流程
-            return await self._start_ending()
-        
+            ending_msg = await self._start_ending()
+            return QuestionResult(
+                question=ending_msg,
+                source="generated",
+                candidate_question_id=None,
+            )
+
         # 未超时，继续采访
-        response = await self.interview_agent.handle_input(user_input)
-        
+        response = await self.interview_agent.handle_input(
+            user_input,
+            candidate_questions=candidate_questions,
+        )
+
         # 检查InterviewAgent是否主动结束
         if self.interview_agent.is_completed:
-            return await self._start_ending()
-        
+            ending_msg = await self._start_ending()
+            return QuestionResult(
+                question=ending_msg,
+                source="generated",
+                candidate_question_id=None,
+            )
+
         return response
+
+    async def _handle_ending_input(self, user_input: str) -> QuestionResult:
+        """处理结束阶段的用户输入"""
+        return QuestionResult(
+            question="今天的采访就到这里啦，非常感谢您的分享。期待下次再聊！",
+            source="generated",
+            candidate_question_id=None,
+        )
     
     async def _start_ending(self) -> str:
         """

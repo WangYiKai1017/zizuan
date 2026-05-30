@@ -41,7 +41,7 @@ from _common import (  # noqa: E402
     warn,
 )
 
-USER_ID = "test_user003"
+USER_ID = "test_user_interview"
 
 
 def _consume_sse(
@@ -120,22 +120,77 @@ def main() -> int:
 
     info(f"Captured session_id = {session_id}")
 
-    # --- Step 2: POST /api/interview/message ----------------------------
-    section("Step 2: POST /api/interview/message")
+    # --- Step 2a: POST /api/interview/message (backward compat) ---------
+    section("Step 2a: POST /api/interview/message (backward compat)")
     msg_url = f"{BASE_URL}/api/interview/message"
-    msg_payload = {
+    msg_payload_compat = {
         "user_id": USER_ID,
         "session_id": session_id,
         "message": "你好，我想开始讲我的故事",
     }
-    msg_events, _ = _consume_sse("POST", msg_url, json_body=msg_payload)
-    if not msg_events:
-        failures.append("message: no SSE events received")
-    msg_event_names = {e for e, _ in msg_events}
-    if "agent_message" not in msg_event_names and "error" not in msg_event_names:
+    msg_events_compat, _ = _consume_sse("POST", msg_url, json_body=msg_payload_compat)
+    if not msg_events_compat:
+        failures.append("message_compat: no SSE events received")
+    msg_event_names_compat = {e for e, _ in msg_events_compat}
+    if "agent_message" not in msg_event_names_compat and "error" not in msg_event_names_compat:
         warn(
-            f"message: expected 'agent_message' (or 'error'); "
-            f"got {sorted(msg_event_names)}"
+            f"message_compat: expected 'agent_message' (or 'error'); "
+            f"got {sorted(msg_event_names_compat)}"
+        )
+
+    # Validate new fields are present in backward-compat mode
+    for ev_name, data in msg_events_compat:
+        if ev_name == "agent_message":
+            if "question_source" not in data:
+                failures.append("message_compat: missing 'question_source' in agent_message")
+            if "candidate_question_id" not in data:
+                failures.append("message_compat: missing 'candidate_question_id' in agent_message")
+
+    # --- Step 2b: POST /api/interview/message (with candidate_questions) --
+    # Use a message highly relevant to one candidate question so LLM is likely to select it.
+    section("Step 2b: POST /api/interview/message (with candidate_questions)")
+    msg_payload_cq = {
+        "user_id": USER_ID,
+        "session_id": session_id,
+        "message": "我年轻时在部队待了五年，那时候条件很苦，但从来没后悔过。",
+        "candidate_questions": [
+            {"id": "q_army", "question": "您当年为什么选择参军？"},
+            {"id": "q_friend", "question": "部队里最难忘的人是谁？"},
+        ],
+    }
+    msg_events_cq, _ = _consume_sse("POST", msg_url, json_body=msg_payload_cq)
+    if not msg_events_cq:
+        failures.append("message_cq: no SSE events received")
+    msg_event_names_cq = {e for e, _ in msg_events_cq}
+    if "agent_message" not in msg_event_names_cq and "error" not in msg_event_names_cq:
+        warn(
+            f"message_cq: expected 'agent_message' (or 'error'); "
+            f"got {sorted(msg_event_names_cq)}"
+        )
+
+    # Validate new fields are present when candidate_questions are sent
+    cq_source = None
+    cq_id = None
+    for ev_name, data in msg_events_cq:
+        if ev_name == "agent_message":
+            if "question_source" not in data:
+                failures.append("message_cq: missing 'question_source' in agent_message")
+            if "candidate_question_id" not in data:
+                failures.append("message_cq: missing 'candidate_question_id' in agent_message")
+            cq_source = data.get("question_source")
+            cq_id = data.get("candidate_question_id")
+            info(
+                f"message_cq: question_source={cq_source!r}, "
+                f"candidate_question_id={cq_id!r}"
+            )
+
+    # Log whether a candidate question was consumed (best-effort with real LLM)
+    if cq_source == "candidate_question" and cq_id:
+        info(f"SUCCESS: LLM selected candidate question {cq_id!r}")
+    else:
+        warn(
+            "LLM did not select a candidate question this run (non-deterministic with real LLM). "
+            "This is acceptable for integration tests."
         )
 
     # --- Step 3: GET /api/interview/status/{user_id}/{session_id} -------
