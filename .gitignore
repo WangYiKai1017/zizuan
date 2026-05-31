@@ -20,12 +20,8 @@ ENV/
 logs/
 *.log
 
-# 知识库需要纳入版本控制（覆盖上面的 logs/ 与 *.log 规则）
-!knowledge_base/
-!knowledge_base/**
-!knowledge_base/**/logs/
-!knowledge_base/**/logs/**
-!knowledge_base/**/*.log
+# 知识库运行数据
+knowledge_base/
 
 # 测试
 .coverage
