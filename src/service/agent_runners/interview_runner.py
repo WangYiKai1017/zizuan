@@ -1,4 +1,6 @@
 """Interview agent runner — wraps InterviewSessionAgent for SSE streaming."""
+from typing import Optional, List, Dict
+
 from src.service.sse_response import SSEEmitter
 from src.service.session_manager import SessionManager
 from src.agents.interview_session_agent import InterviewSessionAgent
@@ -39,7 +41,11 @@ class InterviewRunner:
         })
         await self.emitter.emit_done("会话已建立")
 
-    async def handle_message(self, message: str) -> None:
+    async def handle_message(
+        self,
+        message: str,
+        candidate_questions: Optional[List[Dict[str, str]]] = None,
+    ) -> None:
         """Handle a user message. Emits agent_message (+ optional phase_changed)."""
         session_manager = SessionManager.get_instance()
         agent = await session_manager.get_interview_agent(self.user_id)
@@ -53,7 +59,7 @@ class InterviewRunner:
         phase_before = agent.phase
 
         # Process message
-        response = await agent.handle_user_input(message)
+        result = await agent.handle_user_input(message, candidate_questions=candidate_questions)
 
         phase_after = agent.phase
 
@@ -68,8 +74,10 @@ class InterviewRunner:
         # Emit agent message
         await self.emitter.emit("agent_message", {
             "session_id": self.session_id,
-            "message": response,
+            "message": result.question,
             "phase": phase_after.value if hasattr(phase_after, 'value') else str(phase_after),
+            "question_source": result.source,
+            "candidate_question_id": result.candidate_question_id,
         })
         await self.emitter.emit_done()
 

@@ -5,7 +5,7 @@ import json
 
 from src.services.llm_service import LLMService, get_llm_service
 from src.services.memory_manager import MemoryManager
-from src.services.question_generator import QuestionGenerator
+from src.services.question_generator import QuestionGenerator, QuestionResult
 from src.tools import MemoryCacheTool, KnowledgeQueryTool, MemoryArchiveTool
 from src.models import SessionState, ConversationTurn
 from src.storage.memory_repository import MemoryRepository
@@ -112,25 +112,29 @@ class InterviewAgent:
         
         return opening
     
-    async def handle_input(self, user_input: str) -> str:
+    async def handle_input(
+        self,
+        user_input: str,
+        candidate_questions: Optional[List[Dict[str, str]]] = None,
+    ) -> QuestionResult:
         """
         处理用户输入
-        
+
         核心流程：
         1. 记录用户回答
         2. 识别关键信息（事件/人物/时间点）
         3. 检查缓存记忆
         4. 查询知识库（如需要）
         5. 更新缓存
-        6. 生成下一个问题
+        6. 生成下一个问题（支持候选问题）
         7. 检查时间限制
         """
         # 1. 记录用户回答
         self._record_turn("user", user_input)
-        
+
         # 2. 识别关键信息
         key_info = await self._identify_key_information(user_input)
-        
+
         # 3-4. 知识库查询流程
         memory_context = None
         if key_info:
@@ -139,7 +143,7 @@ class InterviewAgent:
                 session_id=self.user_id,
                 query={"tags": key_info.get("tags", [])}
             )
-            
+
             if cached_content:
                 # 缓存命中
                 memory_context = cached_content
@@ -150,38 +154,46 @@ class InterviewAgent:
                     query=key_info,
                     max_iterations=3
                 )
-                
+
                 # 5. 更新缓存
                 await self.cache_tool.append_cache(
                     session_id=self.user_id,
                     content=knowledge_result,
                     tags=key_info.get("tags", [])
                 )
-                
+
                 memory_context = knowledge_result
-        
+
         # 6. 生成下一个问题
-        next_question = await self.question_generator.generate_next(
+        result = await self.question_generator.generate_next(
             user_input=user_input,
             memory_context=memory_context,
-            conversation_history=self.conversation_history
+            conversation_history=self.conversation_history,
+            candidate_questions=candidate_questions,
         )
-        
+
         # 7. 检查时间限制
         elapsed_ratio = self._get_elapsed_ratio()
-        
+
         if elapsed_ratio >= 1.0:
             # 超时，标记完成
             self.is_completed = True
-            return next_question  # 返回最后一个问题，等待回答后再结束
+            # 记录助手回复（纯文本）
+            self._record_turn("assistant", result.question)
+            return result
         elif elapsed_ratio >= self.warning_threshold:
             # 接近超时，在问题中加入时间提示
-            next_question = self._add_time_warning(next_question)
-        
-        # 记录助手回复
-        self._record_turn("assistant", next_question)
-        
-        return next_question
+            warned_question = self._add_time_warning(result.question)
+            result = QuestionResult(
+                question=warned_question,
+                source=result.source,
+                candidate_question_id=result.candidate_question_id,
+            )
+
+        # 记录助手回复（纯文本）
+        self._record_turn("assistant", result.question)
+
+        return result
     
     async def _identify_key_information(self, user_input: str) -> Optional[Dict]:
         """
@@ -314,8 +326,10 @@ class InterviewAgent:
     
     async def _load_session_end_prompt(self) -> str:
         """加载结束引导Prompt"""
+        from pathlib import Path
+        prompt_path = Path(__file__).resolve().parent.parent.parent / "Prompts" / "SessionEndGuide-Prompt.md"
         try:
-            with open("/Users/yikaiwang/Documents/trae_projects/zizhuan/Prompts/SessionEndGuide-Prompt.md", 'r', encoding='utf-8') as f:
+            with open(prompt_path, 'r', encoding='utf-8') as f:
                 content = f.read()
             # 提取markdown中的代码块内容
             start_idx = content.find("```") + 3

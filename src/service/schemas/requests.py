@@ -1,6 +1,6 @@
 """Pydantic models for API request/response bodies."""
 import re
-from typing import Optional
+from typing import List, Optional
 
 from pydantic import BaseModel, field_validator
 
@@ -17,19 +17,26 @@ class UserIdRequest(BaseModel):
         return v
 
 
+class CandidateQuestion(BaseModel):
+    """A prepared question from family members."""
+    id: str
+    question: str
+
+
 class InterviewMessageRequest(BaseModel):
     """Request body for sending a message in an interview session."""
     user_id: str
     session_id: str
     message: str
-    
+    candidate_questions: Optional[List[CandidateQuestion]] = None
+
     @field_validator("user_id")
     @classmethod
     def validate_user_id(cls, v: str) -> str:
         if not re.match(r"^[a-zA-Z0-9_]{3,50}$", v):
             raise ValueError("user_id must be 3-50 characters, alphanumeric and underscore only")
         return v
-    
+
     @field_validator("message")
     @classmethod
     def validate_message(cls, v: str) -> str:

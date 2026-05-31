@@ -8,6 +8,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, AsyncGenerator, Dict, Optional
 
+from sse_starlette.event import JSONServerSentEvent
+
 
 @dataclass
 class SSEEvent:
@@ -59,10 +61,10 @@ class SSEEmitter:
         self._closed = True
         await self._queue.put(None)  # Sentinel to end stream
     
-    async def stream(self) -> AsyncGenerator[str, None]:
-        """Yield formatted SSE strings. Use with EventSourceResponse or StreamingResponse."""
+    async def stream(self) -> AsyncGenerator[JSONServerSentEvent, None]:
+        """Yield JSONServerSentEvent objects. Use with EventSourceResponse."""
         while True:
             event = await self._queue.get()
             if event is None:
                 break
-            yield event.format()
+            yield JSONServerSentEvent(data=event.data, event=event.event)
