@@ -18,17 +18,11 @@ class InterviewAgent:
     主体采访Agent
     
     职责：
-    - 时间驱动的采访流程
     - 问题生成与对话引导
     - 知识库查询与缓存管理
     - 关键信息识别与追踪
     
     使用Prompt：QuestionGenerator-Prompt.md
-    
-    时间规则：
-    - 标准时长：15分钟
-    - 含初始化：5分钟
-    - 12分钟时触发时间警告
     
     核心流程：
     提问 → 回答 → 识别关键信息 → 查询知识库 → 更新缓存 → 继续
@@ -42,9 +36,9 @@ class InterviewAgent:
         cache_tool: MemoryCacheTool = None,
         query_tool: KnowledgeQueryTool = None,
         archive_tool: MemoryArchiveTool = None,
-        duration_minutes: int = 15,
         resume_prompt: str = None,
-        initial_history: List[Dict] = None
+        initial_history: List[Dict] = None,
+        address_style: str = "您",
     ):
         self.user_id = user_id
         self.llm_service = llm_service or get_llm_service()
@@ -60,11 +54,6 @@ class InterviewAgent:
         self.query_tool = query_tool or KnowledgeQueryTool()
         self.archive_tool = archive_tool or MemoryArchiveTool()
         
-        # 时间控制
-        self.duration_minutes = duration_minutes
-        self.warning_threshold = 0.8  # 80%时触发警告
-        self.start_time = datetime.now()
-        
         # 会话状态
         self.session_state: Optional[SessionState] = None
         self.conversation_history = initial_history or []
@@ -73,6 +62,15 @@ class InterviewAgent:
         
         # 继续对话Prompt
         self.resume_prompt = resume_prompt
+
+        # 对被采访者的称呼方式（如“张爷爷”、“李叔叔”、“您”）
+        self.address_style: str = address_style or "您"
+        
+        # 话题追踪
+        self.current_topic: Optional[str] = None
+        self.topic_turn_count: int = 0
+        self.topic_max_turns: int = 8  # switch after 8 turns on same topic
+        self.topic_history: list[str] = []  # track previous topics to avoid repeating
         
         # 问题生成器
         self.question_generator = QuestionGenerator(llm_service)
@@ -127,7 +125,6 @@ class InterviewAgent:
         4. 查询知识库（如需要）
         5. 更新缓存
         6. 生成下一个问题（支持候选问题）
-        7. 检查时间限制
         """
         # 1. 记录用户回答
         self._record_turn("user", user_input)
@@ -135,34 +132,51 @@ class InterviewAgent:
         # 2. 识别关键信息
         key_info = await self._identify_key_information(user_input)
 
-        # 3-4. 知识库查询流程
+        # 2.5 话题追踪与换话题评估
+        detected_topic = self._detect_current_topic(key_info)
+        if detected_topic and detected_topic == self.current_topic:
+            self.topic_turn_count += 1
+        elif detected_topic and detected_topic != self.current_topic:
+            # Topic changed naturally
+            if self.current_topic:
+                self.topic_history.append(self.current_topic)
+            self.current_topic = detected_topic
+            self.topic_turn_count = 1
+        else:
+            # No clear topic detected, increment current
+            self.topic_turn_count += 1
+
+        should_switch = self.topic_turn_count >= self.topic_max_turns
+
+        # 3-4. 知识库查询流程（缓存优先）
         memory_context = None
         if key_info:
-            # 检查缓存
-            cached_content = await self.cache_tool.get_cache(
+            query_tags = key_info.get("tags", []) or []
+            query_text = key_info.get("query_text", "") or user_input
+
+            # 1) 先查缓存（精确 + 模糊匹配）
+            cache_result = self.cache_tool.get_cache(
                 session_id=self.user_id,
-                query={"tags": key_info.get("tags", [])}
+                query={"tags": query_tags, "query_text": query_text},
             )
 
-            if cached_content:
-                # 缓存命中
-                memory_context = cached_content
+            if cache_result:
+                # 缓存命中，直接复用
+                memory_context = cache_result
             else:
-                # 缓存未命中，查询知识库
-                knowledge_result = await self.query_tool.query(
+                # 2) 缓存未命中，查询知识库
+                memory_context = await self.query_tool.query(
                     user_id=self.user_id,
                     query=key_info,
-                    max_iterations=3
+                    max_iterations=7,
                 )
 
-                # 5. 更新缓存
-                await self.cache_tool.append_cache(
+                # 3) 写入缓存供后续复用
+                self.cache_tool.append_cache(
                     session_id=self.user_id,
-                    content=knowledge_result,
-                    tags=key_info.get("tags", [])
+                    content=memory_context,
+                    tags=query_tags,
                 )
-
-                memory_context = knowledge_result
 
         # 6. 生成下一个问题
         result = await self.question_generator.generate_next(
@@ -170,25 +184,19 @@ class InterviewAgent:
             memory_context=memory_context,
             conversation_history=self.conversation_history,
             candidate_questions=candidate_questions,
+            should_switch_topic=should_switch,
+            current_topic=self.current_topic,
+            topic_turn_count=self.topic_turn_count,
+            topic_history=self.topic_history,
+            address_style=self.address_style,
         )
 
-        # 7. 检查时间限制
-        elapsed_ratio = self._get_elapsed_ratio()
-
-        if elapsed_ratio >= 1.0:
-            # 超时，标记完成
-            self.is_completed = True
-            # 记录助手回复（纯文本）
-            self._record_turn("assistant", result.question)
-            return result
-        elif elapsed_ratio >= self.warning_threshold:
-            # 接近超时，在问题中加入时间提示
-            warned_question = self._add_time_warning(result.question)
-            result = QuestionResult(
-                question=warned_question,
-                source=result.source,
-                candidate_question_id=result.candidate_question_id,
-            )
+        # 如果LLM决定换话题，更新追踪状态
+        if result.topic_switched and result.new_topic:
+            if self.current_topic:
+                self.topic_history.append(self.current_topic)
+            self.current_topic = result.new_topic
+            self.topic_turn_count = 1
 
         # 记录助手回复（纯文本）
         self._record_turn("assistant", result.question)
@@ -253,49 +261,122 @@ class InterviewAgent:
             logger.error(f"Failed to parse key information result: {result}")
             return None
     
-    async def generate_ending(self) -> str:
-        """
-        生成结束引导内容
+    def _detect_current_topic(self, key_info: Optional[Dict]) -> Optional[str]:
+        """Extract the dominant topic from identified key information.
         
-        使用SessionEndGuide-Prompt.md
+        Returns a short topic descriptor like '部队经历', '母亲', '童年学校' etc.
+        """
+        if not key_info:
+            return None
+        
+        # Priority: events > persons > locations > time_points
+        events = key_info.get("events", [])
+        if events:
+            return events[0] if isinstance(events[0], str) else str(events[0])
+        
+        persons = key_info.get("persons", [])
+        if persons:
+            return persons[0] if isinstance(persons[0], str) else str(persons[0])
+        
+        locations = key_info.get("locations", [])
+        if locations:
+            return locations[0] if isinstance(locations[0], str) else str(locations[0])
+        
+        time_points = key_info.get("time_points", [])
+        if time_points:
+            return time_points[0] if isinstance(time_points[0], str) else str(time_points[0])
+        
+        return None
+    
+    async def generate_ending(self) -> dict:
+        """
+        生成结束引导内容及下次采访建议问题。
+
+        Returns:
+            dict with keys:
+                - message: 结束引导消息
+                - next_questions: 下次采访建议问题列表
+                - summary: 本次采访摘要
         """
         # 加载结束引导prompt
         ending_prompt = await self._load_session_end_prompt()
-        
+
         # 注入变量
-        prompt = ending_prompt.replace("{{session_duration}}", str(self.duration_minutes))
+        prompt = ending_prompt.replace("{{session_duration}}", "")
         prompt = prompt.replace("{{total_turns}}", str(len(self.conversation_history)))
         prompt = prompt.replace("{{conversation_history}}", self._format_history())
-        
+        prompt = prompt.replace("{{elderly_title}}", self.address_style or "您")
+
         # 收集本次事件
         collected_events = await self._extract_collected_events()
         prompt = prompt.replace("{{collected_events}}", collected_events)
-        
+
         ending_message = await self.llm_service.invoke(
             prompt=prompt,
             temperature=0.7,
-            history=self.conversation_history  # 传递完整对话历史
+            history=self.conversation_history
         )
         ending_message = ending_message.content
-        
+
         # 保存会话总结
         self.session_summary = ending_message
-        
-        return ending_message
-    
-    def _get_elapsed_ratio(self) -> float:
-        """获取已用时长比例"""
-        elapsed = self._get_elapsed_minutes()
-        return elapsed / self.duration_minutes
-    
-    def _get_elapsed_minutes(self) -> float:
-        """获取已用时长"""
-        elapsed = datetime.now() - self.start_time
-        return elapsed.total_seconds() / 60
-    
-    def _add_time_warning(self, question: str) -> str:
-        """在问题中加入时间提示"""
-        return f"{question}\n\n（不知不觉聊了挺久的，我们再聊最后一个话题吧）"
+
+        # --- Generate next-session questions via a second LLM call ---
+        next_questions = await self._generate_next_session_questions()
+
+        return {
+            "message": ending_message,
+            "next_questions": next_questions,
+            "summary": ending_message,
+        }
+
+    async def _generate_next_session_questions(self) -> list:
+        """生成下次采访建议问题（5-8个）。"""
+        recent_conversation = self._format_recent_conversation(20)
+        topic_history_str = "、".join(self.topic_history) if self.topic_history else "（无）"
+
+        prompt = f"""基于以下采访对话记录，请生成5-8个下次采访时可以问的问题。
+
+要求：
+1. 问题应该基于本次对话中提到但未深入展开的话题线索
+2. 问题应该自然延续本次采访的叙事脉络
+3. 问题应该覆盖不同的话题方向（人物、事件、情感等）
+4. 问题语气应该温和亲切，使用称呼: {self.address_style}
+5. 优先关注被采访者主动提到但被跳过的话题
+
+对话记录（最近20轮）:
+{recent_conversation}
+
+当前话题: {self.current_topic or '（无）'}
+已探索过的话题: {topic_history_str}
+
+请以JSON格式返回:
+{{"questions": ["问题1", "问题2", ...]}}
+
+只输出JSON，不要其他内容。"""
+
+        try:
+            result = await self.llm_service.invoke(
+                prompt=prompt,
+                temperature=0.7,
+                response_format={"type": "json_object"},
+            )
+            content = result.content
+            if isinstance(content, dict):
+                return content.get("questions", [])
+            parsed = json.loads(content)
+            return parsed.get("questions", [])
+        except Exception as e:
+            logger.error(f"Failed to generate next-session questions: {e}")
+            return []
+
+    def _format_recent_conversation(self, n: int = 20) -> str:
+        """格式化最近N轮对话历史。"""
+        lines = []
+        for turn in self.conversation_history[-n:]:
+            role = "用户" if turn["role"] == "user" else "助手"
+            lines.append(f"{role}: {turn['content']}")
+        return "\n".join(lines)
     
     def _record_turn(self, role: str, content: str):
         """记录对话轮次"""

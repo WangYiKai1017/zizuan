@@ -1,8 +1,9 @@
 from typing import Optional, Dict, Any, List
-from datetime import datetime, timedelta
+from datetime import datetime
 from enum import Enum
 from pathlib import Path
 import logging
+import re
 
 from src.agents.profile_collection_agent import ProfileCollectionAgent
 from src.agents.interview_agent import InterviewAgent
@@ -38,7 +39,6 @@ class InterviewSessionAgent:
     职责：
     - 会话生命周期管理
     - 流程调度（初始化→采访→结束）
-    - 时间控制（15分钟总时长，初始化5分钟）
     - 知识库协调
     
     启动逻辑：
@@ -46,10 +46,7 @@ class InterviewSessionAgent:
     2. 存在 → 加载历史对话，进入采访流程
     3. 不存在 → 启动用户初始化流程
     
-    时间规则：
-    - 总时长：15分钟
-    - 含初始化：采访流程缩减至10分钟
-    - 初始化独立限制：5分钟
+    会话结束由服务层显式调用 end_session() 触发。
     """
     
     def __init__(
@@ -81,12 +78,8 @@ class InterviewSessionAgent:
         
         # 会话状态
         self.phase = SessionPhase.INIT
-        self.session_start_time: Optional[datetime] = None
-        self.total_duration_minutes = 15
-        self.profile_duration_minutes = 5
-        # self.profile_duration_minutes = 1
         self.has_profile = False  # 是否完成了初始化
-        self.five_minute_archived = False  # 是否已完成前五分钟归档
+        self.address_style: str = "您"  # 对被采访者的称呼方式，默认为"您"
         
         # 子Agent
         self.profile_agent: Optional[ProfileCollectionAgent] = None
@@ -109,6 +102,10 @@ class InterviewSessionAgent:
         self.session_state: Optional[SessionState] = None
         self.conversation_history: list = []
         self.current_round_queries: set = set()  # 本轮对话中已提出的查询请求
+
+        # 老用户恢复会话时载入的候选问题（来自上一次 session 归档）
+        self.initial_candidate_questions: Optional[List[Dict[str, str]]] = None
+        self._candidates_passed: bool = False
         
     async def start(self) -> str:
         """
@@ -117,8 +114,6 @@ class InterviewSessionAgent:
         Returns:
             开场白或欢迎语
         """
-        self.session_start_time = datetime.now()
-        
         # 检查知识库是否存在
         knowledge_base_exists = await self._check_knowledge_base()
         
@@ -182,13 +177,43 @@ class InterviewSessionAgent:
         
         流程：
         1. 加载历史对话记录
-        2. 分析需要的知识库信息
-        3. 执行知识库查询
-        4. 生成继续对话的Prompt
-        5. 进入采访流程
+        2. 加载最近一次的 session 归档作为上下文
+        3. 分析需要的知识库信息
+        4. 执行知识库查询
+        5. 生成继续对话的Prompt（携带上次 session 上下文）
+        6. 进入采访流程，并把上次准备好的问题作为候选注入首轮
         """
         self.has_profile = True
-        
+
+        # 0. 读取user.md计算称呼方式（user.md 不存在时使用默认 "您"）
+        profile_info = self._parse_user_md(self.user_id)
+        self.address_style = self._compute_address_style(profile_info)
+        logger.info(f"Computed address_style for resumed session: {self.address_style}")
+
+        # 0.1 查找并解析最新的 session 归档
+        prev_context: dict = {}
+        sessions_dir = self.knowledge_base_path / "sessions"
+        if sessions_dir.exists() and sessions_dir.is_dir():
+            session_files = sorted(sessions_dir.glob("session_*.md"), reverse=True)
+            if session_files:
+                latest_session = session_files[0]
+                logger.info(f"Loading previous session archive: {latest_session}")
+                prev_context = self._parse_session_archive(latest_session)
+            else:
+                logger.info(f"No session archive files found in {sessions_dir}")
+        else:
+            logger.info(f"Sessions directory not found: {sessions_dir}")
+
+        # 0.2 上次准备好的问题 → 转为候选问题格式，注入首轮 handle_input
+        next_questions = prev_context.get("next_questions", []) or []
+        if next_questions:
+            self.initial_candidate_questions = [
+                {"id": f"prev_q_{i}", "question": q}
+                for i, q in enumerate(next_questions, 1)
+            ]
+            self._candidates_passed = False
+            logger.info(f"Loaded {len(self.initial_candidate_questions)} candidate questions from previous session")
+
         # 1. 从知识库中读取最新的对话记录
         history = await self.memory_manager.repository.get_latest_conversation_records(self.user_id, 5)
         self.conversation_history = history
@@ -215,15 +240,16 @@ class InterviewSessionAgent:
             self.current_round_queries.add(query_hash)  # 记录已查询的请求
         
         # 4. 缓存知识库查询结果
-        await self.cache_tool.append_cache(
+        self.cache_tool.append_cache(
             session_id=self.user_id,
             content=knowledge_context
         )
         
-        # 5. 生成继续对话的Prompt
+        # 5. 生成继续对话的Prompt（包含上次 session 上下文）
         resume_prompt = self._build_resume_dialogue_prompt(
             history=history,
-            knowledge_context=knowledge_context
+            knowledge_context=knowledge_context,
+            prev_context=prev_context,
         )
         
         # 6. 初始化InterviewAgent并启动
@@ -234,12 +260,113 @@ class InterviewSessionAgent:
             cache_tool=self.cache_tool,
             query_tool=self.query_tool,
             archive_tool=self.archive_tool,
-            duration_minutes=15,  # 老用户完整15分钟
-            resume_prompt=resume_prompt
+            resume_prompt=resume_prompt,
+            address_style=self.address_style,
         )
-        
+
+        # 6.1 将上次的话题历史与当前话题方向注入 InterviewAgent
+        prev_topic_history = prev_context.get("topic_history", []) or []
+        if prev_topic_history:
+            self.interview_agent.topic_history = list(prev_topic_history)
+        prev_current_topic = prev_context.get("current_topic")
+        if prev_current_topic:
+            self.interview_agent.current_topic = prev_current_topic
+
         self.phase = SessionPhase.INTERVIEW
         return await self.interview_agent.start()
+
+    def _parse_session_archive(self, file_path: Path) -> dict:
+        """解析一次采访归档（session_*.md）以提取下次会话所需上下文。
+
+        Returns dict with keys:
+          - next_questions: List[str] — 上次为本次准备好的候选问题
+          - unfinished_topics: List[str] — 上次未完成的话题
+          - current_topic: Optional[str] — 上次结束时的当前话题方向
+          - topic_history: List[str] — 已探索过的话题
+          - summary: str — 上次采访摘要
+        """
+        result: dict = {
+            "next_questions": [],
+            "unfinished_topics": [],
+            "current_topic": None,
+            "topic_history": [],
+            "summary": "",
+        }
+
+        try:
+            content = file_path.read_text(encoding="utf-8")
+        except Exception as e:
+            logger.warning(f"Failed to read session archive {file_path}: {e}")
+            return result
+
+        if not content.strip():
+            return result
+
+        # 按二级标题分块
+        sections: dict = {}
+        current_heading: Optional[str] = None
+        buffer: list = []
+        for line in content.split("\n"):
+            if line.startswith("## "):
+                if current_heading is not None:
+                    sections[current_heading] = "\n".join(buffer).strip()
+                current_heading = line[3:].strip()
+                buffer = []
+            else:
+                if current_heading is not None:
+                    buffer.append(line)
+        if current_heading is not None:
+            sections[current_heading] = "\n".join(buffer).strip()
+
+        # 下次采访建议问题
+        questions_block = sections.get("下次采访建议问题", "")
+        if questions_block:
+            numbered_pattern = re.compile(r"^\s*\d+\.\s*(.+?)\s*$")
+            for line in questions_block.split("\n"):
+                match = numbered_pattern.match(line)
+                if match:
+                    q = match.group(1).strip()
+                    if q:
+                        result["next_questions"].append(q)
+
+        # 未完成的话题
+        unfinished_block = sections.get("未完成的话题", "")
+        if unfinished_block:
+            for line in unfinished_block.split("\n"):
+                stripped = line.strip()
+                if stripped.startswith("- "):
+                    topic = stripped[2:].strip()
+                    if topic:
+                        result["unfinished_topics"].append(topic)
+
+        # 采访上下文
+        context_block = sections.get("采访上下文", "")
+        if context_block:
+            for line in context_block.split("\n"):
+                stripped = line.strip()
+                if not stripped.startswith("- "):
+                    continue
+                kv = stripped[2:]
+                if ":" in kv:
+                    key, value = kv.split(":", 1)
+                elif "：" in kv:
+                    key, value = kv.split("：", 1)
+                else:
+                    continue
+                key = key.strip()
+                value = value.strip()
+                if key == "当前话题方向":
+                    result["current_topic"] = value or None
+                elif key == "已探索话题":
+                    parts = re.split(r"[、,，]", value)
+                    result["topic_history"] = [p.strip() for p in parts if p.strip()]
+
+        # 本次采访摘要
+        summary_block = sections.get("本次采访摘要", "")
+        if summary_block:
+            result["summary"] = summary_block.strip()
+
+        return result
     
     async def _start_profile_collection(self) -> str:
         """
@@ -247,25 +374,25 @@ class InterviewSessionAgent:
         
         流程：
         1. 创建ProfileCollectionAgent
-        2. 执行信息收集（最长5分钟）
-        3. 收集完成或超时后，生成基础知识库
+        2. 执行信息收集（仅在所有必填字段收集完成后结束）
+        3. 收集完成后，生成基础知识库
         4. 将对话记录传递给采访流程
         """
         self.phase = SessionPhase.PROFILE_COLLECTION
         
-        # 创建初始化Agent
+        # 创建初始化Agent（不使用时间限制，仅依赖必填字段检查）
         self.profile_agent = ProfileCollectionAgent(
             user_id=self.user_id,
             llm_service=self.llm_service,
             memory_manager=self.memory_manager,
-            max_duration_minutes=self.profile_duration_minutes
+            max_duration_minutes=10**9
         )
         
         # 执行初始化流程
         welcome_message = await self.profile_agent.start()
         
-        # 注意：初始化Agent会持续运行，直到收集完成或超时
-        # 超时后会触发 _on_profile_complete
+        # 注意：初始化Agent会持续运行，直到所有必填字段收集完成
+        # 完成后会触发 _on_profile_complete
         
         return welcome_message
     
@@ -336,8 +463,12 @@ class InterviewSessionAgent:
         
         # 3. 标记已初始化
         self.has_profile = True
-        
-        # 4. 启动采访流程（缩减至10分钟）
+
+        # 3.1 根据收集到的画像信息计算称呼方式
+        self.address_style = self._compute_address_style(self.profile_agent.collected_info or {})
+        logger.info(f"Computed address_style after profile collection: {self.address_style}")
+
+        # 4. 启动采访流程
         self.interview_agent = InterviewAgent(
             user_id=self.user_id,
             llm_service=self.llm_service,
@@ -345,8 +476,8 @@ class InterviewSessionAgent:
             cache_tool=self.cache_tool,
             query_tool=self.query_tool,
             archive_tool=self.archive_tool,
-            duration_minutes=10,  # 新用户只有10分钟采访时间
-            initial_history=profile_history
+            initial_history=profile_history,
+            address_style=self.address_style,
         )
         
         self.phase = SessionPhase.INTERVIEW
@@ -357,32 +488,23 @@ class InterviewSessionAgent:
         candidate_questions: Optional[List[Dict[str, str]]] = None,
     ) -> QuestionResult:
         """处理采访阶段的用户输入"""
-        # 检查时间限制
-        elapsed = self._get_elapsed_minutes()
-
-        # 检查是否达到前五分钟，触发归档
-        if not self.five_minute_archived and elapsed >= 5:
-            logger.info(f"达到前五分钟，触发归档，已用时间：{elapsed:.1f}分钟")
-            await self.archive_tool.archive_conversation(
-                user_id=self.user_id,
-                conversation_history=self.conversation_history,
-                session_summary="前五分钟对话存档"
-            )
-            self.five_minute_archived = True
-
-        if elapsed >= self.total_duration_minutes:
-            # 超时，进入结束流程
-            ending_msg = await self._start_ending()
-            return QuestionResult(
-                question=ending_msg,
-                source="generated",
-                candidate_question_id=None,
+        # 首轮：如果有从上一次 session 归档加载的候选问题且当前未传入候选，则传入
+        effective_candidates = candidate_questions
+        if (
+            not effective_candidates
+            and self.initial_candidate_questions
+            and not self._candidates_passed
+        ):
+            effective_candidates = self.initial_candidate_questions
+            self._candidates_passed = True
+            logger.info(
+                f"Passing {len(effective_candidates)} previous-session candidate questions to InterviewAgent on first turn"
             )
 
-        # 未超时，继续采访
+        # 继续采访
         response = await self.interview_agent.handle_input(
             user_input,
-            candidate_questions=candidate_questions,
+            candidate_questions=effective_candidates,
         )
 
         # 检查InterviewAgent是否主动结束
@@ -410,16 +532,52 @@ class InterviewSessionAgent:
         
         流程：
         1. 结束当前问题
-        2. 生成总结和结束语
-        3. 明确下次话题
+        2. 生成总结和结束语（含下次采访建议问题）
+        3. 创建采访记录归档
         4. 归档对话记录
         """
         self.phase = SessionPhase.ENDING
         
-        # 使用InterviewAgent的结束流程
-        ending_message = await self.interview_agent.generate_ending()
-        
-        # 归档对话记录
+        # 使用InterviewAgent的结束流程（现在返回 dict）
+        ending_result = await self.interview_agent.generate_ending()
+
+        # 兼容旧的字符串返回和新的dict返回
+        if isinstance(ending_result, dict):
+            ending_message = ending_result.get("message", "")
+            next_questions = ending_result.get("next_questions", [])
+            summary = ending_result.get("summary", "")
+        else:
+            ending_message = ending_result
+            next_questions = []
+            summary = ending_result
+
+        # 构建 session_data 用于采访记录归档
+        session_data = {
+            "summary": summary,
+            "events": [],
+            "people": [],
+            "timepoints": [],
+            "next_questions": next_questions,
+            "unfinished_topics": self.interview_agent.current_topic or "",
+            "current_topic": self.interview_agent.current_topic or "",
+            "emotion_state": "",
+            "topic_history": list(self.interview_agent.topic_history),
+        }
+
+        # 尝试从 interview_agent 的对话历史中提取事件/人物
+        # (简化实现：仅基于缓存内容获取)
+        try:
+            cache_content = self.cache_tool.get_cache(session_id=self.user_id, query={})
+            if cache_content and isinstance(cache_content, dict):
+                session_data["events"] = cache_content.get("events", [])
+                session_data["people"] = cache_content.get("people", [])
+        except Exception:
+            pass
+
+        # 创建采访记录归档
+        await self.archive_tool.create_session_archive(self.user_id, session_data)
+
+        # 归档对话记录（事件/人物提取和组织）
         await self.archive_tool.archive_conversation(
             user_id=self.user_id,
             conversation_history=self.conversation_history,
@@ -429,12 +587,11 @@ class InterviewSessionAgent:
         self.phase = SessionPhase.CLOSED
         return ending_message
     
-    def _get_elapsed_minutes(self) -> float:
-        """获取已用时长（分钟）"""
-        if not self.session_start_time:
-            return 0
-        elapsed = datetime.now() - self.session_start_time
-        return elapsed.total_seconds() / 60
+    async def end_session(self) -> str:
+        """显式结束会话（由服务层在前端信号时调用）"""
+        if self.phase == SessionPhase.CLOSED:
+            return "会话已关闭"
+        return await self._start_ending()
     
     def _build_resume_analysis_prompt(self, history: list) -> str:
         """
@@ -474,39 +631,69 @@ class InterviewSessionAgent:
     def _build_resume_dialogue_prompt(
         self,
         history: list,
-        knowledge_context: str
+        knowledge_context: str,
+        prev_context: Optional[dict] = None,
     ) -> str:
         """
         构建继续对话的Prompt
         
-        目标：总结上次对话，结合知识库内容，生成开场白
+        目标：总结上次对话，结合知识库内容与上次 session 归档，生成开场白
         """
         history_text = self._format_history(history)
-        
+        prev_context = prev_context or {}
+
+        prev_summary = (prev_context.get("summary") or "").strip()
+        unfinished_topics = prev_context.get("unfinished_topics") or []
+        prev_current_topic = prev_context.get("current_topic") or ""
+        topic_history = prev_context.get("topic_history") or []
+
+        # 裁剪过长的摘要
+        summary_snippet = prev_summary[:200] if prev_summary else ""
+        unfinished_str = "、".join(unfinished_topics[:5]) if unfinished_topics else ""
+        topic_history_str = "、".join(topic_history[:8]) if topic_history else ""
+
+        prev_section = ""
+        if prev_summary or unfinished_topics or prev_current_topic or topic_history:
+            prev_section = f"""## 上次采访上下文
+
+- 上次采访摘要：{summary_snippet or '（无）'}
+- 上次未聊完的话题：{unfinished_str or '（无）'}
+- 上次话题方向：{prev_current_topic or '（无）'}
+- 已探索的话题：{topic_history_str or '（无）'}
+
+"""
+
+        address = self.address_style or "您"
+
         prompt = f"""## 任务说明
 
 你是一位温暖、专业的采访记者，正在采访一位老人撰写自传。
-用户之前已经有过对话，现在需要你根据历史记录和知识库内容，继续上次的对话。
+用户之前已经有过对话，现在需要你根据历史记录、知识库内容及上次 session 上下文，生成一段欢迎回来的开场白。
+
+## 被采访者称呼
+
+{address}
 
 ## 上次对话记录
 
 {history_text}
 
-## 知识库查询结果
+{prev_section}## 知识库查询结果
 
 {knowledge_context}
 
 ## 输出要求
 
 请生成一段开场白，要求：
-1. 简要回顾上次对话的亮点（1-2句话）
-2. 根据知识库内容，提出一个自然延续的问题
-3. 语气温暖、亲切，像老朋友聊天一样
-4. 不要让用户感到压力，引导他继续分享
+1. 以“{address}，欢迎回来”之类的问候开始，体现上次交谈后的延续
+2. 简要回顾上次聊到的主要内容或摘要（1-2句话）
+3. 如果有未聊完的话题，可以提及并试探是否愿意继续
+4. 最后提出一个轻柔、开放的问题让老人选择今天从哪里开始
+5. 语气温暖、亲切，像老朋友聊天一样，字数控制在 80字左右
 
 ## 示例
 
-"上次我们聊到您在工厂工作的那段经历，听起来特别有意思。我记得您提到过张师傅对您帮助很大，能再跟我多说说当时的情况吗？"
+"张爷爷，欢迎回来！上回咱们聊到您在部队服役的那段日子，听得我都入迷了。上次还有些话题没聊完，今天您想从哪里接着讲呢？"
 
 请生成开场白：
 """
@@ -518,3 +705,95 @@ class InterviewSessionAgent:
         for turn in history[-10:]:  # 只取最近10轮
             lines.append(f"用户: {turn.get('content', '')}")
         return "\n".join(lines)
+
+    def _parse_user_md(self, user_id: str) -> dict:
+        """读取并解析 user.md。
+
+        文件位于 knowledge_base/{user_id}/user.md，格式如：
+            - 姓名: xxx
+            - 年龄: 75
+            - 职业: xxx
+            ...
+        """
+        user_md_path = self.knowledge_base_root / user_id / "user.md"
+        if not user_md_path.exists():
+            return {}
+
+        try:
+            content = user_md_path.read_text(encoding="utf-8")
+        except Exception as e:
+            logger.warning(f"Failed to read user.md at {user_md_path}: {e}")
+            return {}
+
+        key_map = {
+            "姓名": "name",
+            "年龄": "age",
+            "职业": "occupation",
+            "家庭状况": "family_status",
+            "居住情况": "living_arrangement",
+            "故事期望": "story_expectation",
+        }
+
+        profile: dict = {}
+        line_pattern = re.compile(r"^- (.+?):\s*(.+)$")
+        for line in content.split("\n"):
+            match = line_pattern.match(line.strip())
+            if not match:
+                continue
+            cn_key = match.group(1).strip()
+            value = match.group(2).strip()
+            if cn_key in key_map:
+                profile[key_map[cn_key]] = value
+        return profile
+
+    def _compute_address_style(self, profile_info: dict) -> str:
+        """根据被采访者的年龄、姓名、性别提示计算称呼方式。
+
+        规则：
+        - 年龄 > 70，有姓名：{姓}爷爷 / {姓}奶奶
+        - 年龄 50-70，有姓名：{姓}叔叔 / {姓}阿姨
+        - 年龄 < 50，有姓名：{姓}先生 / {姓}女士
+        - 年龄未知或姓名未知：“您”
+
+        性别推断仅依赖 family_status中的提示。
+        """
+        if not isinstance(profile_info, dict) or not profile_info:
+            return "您"
+
+        name = profile_info.get("name")
+        age_value = profile_info.get("age")
+        family_status = profile_info.get("family_status") or ""
+
+        # 解析年龄
+        if age_value is None or age_value == "":
+            return "您"
+        age_match = re.search(r"\d+", str(age_value))
+        if not age_match:
+            return "您"
+        try:
+            age_int = int(age_match.group())
+        except (TypeError, ValueError):
+            return "您"
+
+        # 姓氏（中文姓名取首字）
+        if not name:
+            return "您"
+        surname = str(name).strip()
+        if not surname:
+            return "您"
+        surname = surname[0]
+
+        # 性别推断：family_status 中出现“丈夫/老公”默认为女性；
+        # 出现“妻子/老婆/夫人”默认为男性。
+        gender: Optional[str] = None
+        if any(token in family_status for token in ["丈夫", "老公"]):
+            gender = "female"
+        elif any(token in family_status for token in ["妻子", "老婆", "夫人"]):
+            gender = "male"
+
+        if age_int > 70:
+            return f"{surname}奶奶" if gender == "female" else f"{surname}爷爷"
+        elif age_int >= 50:
+            return f"{surname}阿姨" if gender == "female" else f"{surname}叔叔"
+        else:
+            return f"{surname}女士" if gender == "female" else f"{surname}先生"

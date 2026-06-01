@@ -103,31 +103,290 @@ class MarkdownFileManager:
     
     def _create_index_file(self) -> None:
         """创建索引文件"""
-        content = """# 记忆库索引
-
-## 事件
-- [童年事件](events/childhood/)
-- [少年事件](events/youth/)
-- [中年事件](events/middle_age/)
-- [老年事件](events/elderly/)
-
-## 人物
-- [主人公](people/protagonist.md)
-- [家庭成员](people/family/)
-- [朋友](people/friends/)
-- [同事](people/colleagues/)
-- [其他](people/others/)
-
-## 时间线
-- [人生大事年表](timeline/life-events.md)
-
-## 主题
-- [价值观形成](themes/values.md)
-- [人生转折点](themes/turning-points.md)
-"""
+        sections = [
+            "# 记忆库索引",
+            "",
+            "## 事件",
+            f"- {self.format_wiki_link('童年事件', 'events/childhood/')}",
+            f"- {self.format_wiki_link('少年事件', 'events/youth/')}",
+            f"- {self.format_wiki_link('中年事件', 'events/middle_age/')}",
+            f"- {self.format_wiki_link('老年事件', 'events/elderly/')}",
+            "",
+            "## 人物",
+            f"- {self.format_wiki_link('主人公', 'people/protagonist.md')}",
+            f"- {self.format_wiki_link('家庭成员', 'people/family/')}",
+            f"- {self.format_wiki_link('朋友', 'people/friends/')}",
+            f"- {self.format_wiki_link('同事', 'people/colleagues/')}",
+            f"- {self.format_wiki_link('其他', 'people/others/')}",
+            "",
+            "## 时间线",
+            f"- {self.format_wiki_link('人生大事年表', 'timeline/life-events.md')}",
+            "",
+            "## 主题",
+            f"- {self.format_wiki_link('价值观形成', 'themes/values.md')}",
+            f"- {self.format_wiki_link('人生转折点', 'themes/turning-points.md')}",
+            "",
+        ]
+        content = "\n".join(sections)
         index_path = self.base_path / "index.md"
         with open(index_path, 'w', encoding='utf-8') as f:
             f.write(content)
+
+    # ========== user.md and summary_index ==========
+
+    def create_or_update_user_md(self, profile_info: dict) -> str:
+        """创建或更新被采访者档案文件 user.md
+
+        Args:
+            profile_info: 包含被采访者信息的字典，键如:
+                name, age, occupation, family_status,
+                living_arrangement, story_expectation,
+                supplementary (补充信息字符串)
+
+        Returns:
+            写入文件的绝对路径
+        """
+        user_md_path = self.base_path / "user.md"
+
+        field_labels = {
+            "name": "姓名",
+            "age": "年龄",
+            "occupation": "职业",
+            "family_status": "家庭状况",
+            "living_arrangement": "居住情况",
+            "story_expectation": "故事期望",
+        }
+
+        if not user_md_path.exists():
+            # --- Create new file ---
+            lines = ["# 被采访者档案", "", "## 基本信息"]
+            for key, label in field_labels.items():
+                value = profile_info.get(key)
+                if value:
+                    lines.append(f"- {label}: {value}")
+            lines.append("")
+            lines.append("## 补充信息")
+            supplementary = profile_info.get("supplementary")
+            if supplementary:
+                lines.append(f"\n{supplementary}")
+            lines.append("")
+            content = "\n".join(lines)
+            with open(user_md_path, "w", encoding="utf-8") as f:
+                f.write(content)
+        else:
+            # --- Update existing file ---
+            with open(user_md_path, "r", encoding="utf-8") as f:
+                existing = f.read()
+
+            # Update 基本信息 section
+            for key, label in field_labels.items():
+                value = profile_info.get(key)
+                if not value:
+                    continue
+                pattern = rf"(- {re.escape(label)}: )(.*)"  
+                if re.search(pattern, existing):
+                    existing = re.sub(pattern, rf"\g<1>{value}", existing)
+                else:
+                    # Insert before 补充信息 section
+                    marker = "## 补充信息"
+                    if marker in existing:
+                        existing = existing.replace(
+                            marker, f"- {label}: {value}\n\n{marker}"
+                        )
+                    else:
+                        existing += f"\n- {label}: {value}\n"
+
+            # Append supplementary info if provided
+            supplementary = profile_info.get("supplementary")
+            if supplementary:
+                marker = "## 补充信息"
+                if marker in existing:
+                    existing = existing.rstrip("\n") + f"\n\n{supplementary}\n"
+                else:
+                    existing += f"\n## 补充信息\n\n{supplementary}\n"
+
+            with open(user_md_path, "w", encoding="utf-8") as f:
+                f.write(existing)
+
+        logger.info(f"Created/updated user.md at {user_md_path}")
+        return str(user_md_path)
+
+    def create_or_update_summary_index(self) -> str:
+        """扫描用户知识库目录，生成 summary_index.md 摘要目录。
+
+        - 使用 format_wiki_link() 生成所有链接
+        - 跳过包含 'biography' 的路径
+        - 空目录的分类不写入
+        - 文件按字母排序
+
+        Returns:
+            写入文件的绝对路径
+        """
+        summary_path = self.base_path / "summary_index.md"
+
+        # Section definitions: (heading, subdirs list relative to base_path)
+        sections = [
+            ("事件记录", ["events/childhood", "events/youth", "events/middle_age", "events/elderly"]),
+            ("人物关系", ["people/family", "people/friends", "people/colleagues", "people/others"]),
+            ("时间线", ["timeline"]),
+            ("主题", ["themes"]),
+            ("采访记录", ["sessions"]),
+        ]
+
+        def _get_brief(file_path: Path) -> str:
+            """Read the first meaningful line (title) or first 50 chars."""
+            try:
+                with open(file_path, "r", encoding="utf-8") as f:
+                    first_line = f.readline().strip()
+                # Strip leading '#' for title lines
+                brief = first_line.lstrip("# ").strip()
+                if not brief:
+                    # Try reading more
+                    with open(file_path, "r", encoding="utf-8") as f:
+                        brief = f.read(50).replace("\n", " ").strip()
+                return brief[:50]
+            except Exception:
+                return ""
+
+        output_lines = ["# 记忆库摘要目录", ""]
+
+        # User profile section
+        user_md_path = self.base_path / "user.md"
+        if user_md_path.exists():
+            output_lines.append("## 被采访者档案")
+            link = self.format_wiki_link("被采访者档案", "user.md")
+            output_lines.append(f"- {link} — 被采访者基本信息和个人档案")
+            output_lines.append("")
+
+        # Content sections
+        for heading, subdirs in sections:
+            entries = []
+            for subdir in subdirs:
+                dir_path = self.base_path / subdir
+                if not dir_path.exists():
+                    continue
+                for md_file in sorted(dir_path.rglob("*.md")):
+                    # Skip biography paths
+                    rel = str(md_file.relative_to(self.base_path)).replace(os.sep, "/")
+                    if "biography" in rel.lower():
+                        continue
+                    display = md_file.stem
+                    brief = _get_brief(md_file)
+                    link = self.format_wiki_link(display, rel)
+                    entries.append(f"- {link} — {brief}")
+
+            if entries:
+                output_lines.append(f"## {heading}")
+                output_lines.extend(entries)
+                output_lines.append("")
+
+        content = "\n".join(output_lines)
+        with open(summary_path, "w", encoding="utf-8") as f:
+            f.write(content)
+
+        logger.info(f"Generated summary_index.md at {summary_path}")
+        return str(summary_path)
+
+    # ========== Wiki link formatting ==========
+
+    def _normalize_wiki_link(self, target_path: str) -> str:
+        """Normalize a file path to be relative from the user's KB root.
+
+        Given any path (absolute or relative), strips everything up to and
+        including the user's KB directory to produce a clean relative path.
+
+        Examples:
+            '/project/knowledge_base/user001/events/childhood/play.md'
+              -> 'events/childhood/play.md'
+            'knowledge_base/user001/people/family/mom.md'
+              -> 'people/family/mom.md'
+            'events/childhood/play.md'  -> 'events/childhood/play.md'
+
+        Edge cases:
+            - None or empty string -> returns ''
+            - Paths containing '..' segments are normalized via posix rules
+            - Backslashes are converted to forward slashes
+            - Trailing slash is preserved only for directory-style links
+              (those that originally ended with '/')
+        """
+        if not target_path:
+            return ""
+
+        # Normalize separators to forward slashes
+        path = str(target_path).replace("\\", "/").strip()
+        if not path:
+            return ""
+
+        had_trailing_slash = path.endswith("/")
+
+        # Resolve '..' and '.' segments using posix-style normalization while
+        # preserving an absolute prefix if present.
+        is_abs = path.startswith("/")
+        normalized = os.path.normpath(path).replace(os.path.sep, "/")
+        if is_abs and not normalized.startswith("/"):
+            normalized = "/" + normalized
+
+        # Try to strip the user's KB directory prefix.
+        # Build a marker like 'knowledge_base/<conversation_id>/' when we know it.
+        user_marker = None
+        if getattr(self, "conversation_id", None):
+            user_marker = f"knowledge_base/{self.conversation_id}/"
+
+        stripped = normalized
+
+        if user_marker and user_marker in stripped:
+            stripped = stripped.split(user_marker, 1)[1]
+        else:
+            # Generic fallback: locate any 'knowledge_base/<segment>/' prefix
+            kb_token = "knowledge_base/"
+            idx = stripped.find(kb_token)
+            if idx != -1:
+                tail = stripped[idx + len(kb_token):]
+                # Drop the user-id segment that follows knowledge_base/
+                if "/" in tail:
+                    stripped = tail.split("/", 1)[1]
+                else:
+                    stripped = tail
+            elif stripped.startswith("/"):
+                # Absolute path without a knowledge_base anchor: try to make it
+                # relative to base_path if possible, otherwise keep as-is
+                # (without the leading slash) so it doesn't escape the KB root.
+                try:
+                    base = str(self.base_path).replace(os.path.sep, "/").rstrip("/") + "/"
+                    if stripped.startswith(base):
+                        stripped = stripped[len(base):]
+                    else:
+                        stripped = stripped.lstrip("/")
+                except Exception:
+                    stripped = stripped.lstrip("/")
+
+        # Collapse any accidental double slashes
+        while "//" in stripped:
+            stripped = stripped.replace("//", "/")
+
+        # Drop a leading './' if it appears
+        if stripped.startswith("./"):
+            stripped = stripped[2:]
+
+        # Preserve directory trailing slash if originally present
+        if had_trailing_slash and not stripped.endswith("/"):
+            stripped = stripped + "/"
+        elif not had_trailing_slash:
+            stripped = stripped.rstrip("/") if stripped.endswith("/") and "/" in stripped[:-1] else stripped
+
+        return stripped
+
+    def format_wiki_link(self, display_text: str, target_path: str) -> str:
+        """Create a properly formatted markdown link with a normalized path.
+
+        The resulting path is always relative to the user's KB root
+        (knowledge_base/{user_id}/), regardless of whether ``target_path``
+        was supplied as an absolute path, a path containing the KB prefix,
+        or an already-relative path.
+        """
+        rel_path = self._normalize_wiki_link(target_path)
+        text = display_text if display_text is not None else ""
+        return f"[{text}]({rel_path})"
     
     # ========== 文件操作 ==========
     
@@ -536,6 +795,89 @@ class MarkdownFileManager:
         
         return results
     
+    def create_session_archive(self, session_data: dict) -> str:
+        """创建采访记录归档文件。
+
+        Args:
+            session_data: 包含以下键的字典:
+                summary, events, people, timepoints, next_questions,
+                unfinished_topics, current_topic, emotion_state, topic_history
+
+        Returns:
+            创建的文件绝对路径
+        """
+        from datetime import datetime as _dt
+
+        # Ensure sessions directory exists
+        sessions_dir = self.base_path / "sessions"
+        sessions_dir.mkdir(parents=True, exist_ok=True)
+
+        date_str = _dt.now().strftime("%Y-%m-%d_%H-%M")
+        file_name = f"session_{date_str}.md"
+        file_path = sessions_dir / file_name
+
+        # Build content
+        summary = session_data.get("summary", "")
+        events = session_data.get("events", [])
+        people = session_data.get("people", [])
+        timepoints = session_data.get("timepoints", [])
+        next_questions = session_data.get("next_questions", [])
+        unfinished_topics = session_data.get("unfinished_topics", "")
+        current_topic = session_data.get("current_topic", "")
+        emotion_state = session_data.get("emotion_state", "")
+        topic_history = session_data.get("topic_history", [])
+
+        # Format lists
+        events_list = "\n".join(f"- {e}" for e in events) if events else "（无）"
+        people_list = "\n".join(f"- {p}" for p in people) if people else "（无）"
+        timepoints_list = "\n".join(f"- {t}" for t in timepoints) if timepoints else "（无）"
+        questions_list = "\n".join(
+            f"{i+1}. {q}" for i, q in enumerate(next_questions)
+        ) if next_questions else "（无）"
+
+        if isinstance(unfinished_topics, list):
+            unfinished_text = "\n".join(f"- {t}" for t in unfinished_topics) if unfinished_topics else "（无）"
+        else:
+            unfinished_text = unfinished_topics or "（无）"
+
+        if isinstance(topic_history, list):
+            topic_history_text = "、".join(topic_history) if topic_history else "（无）"
+        else:
+            topic_history_text = topic_history or "（无）"
+
+        content = f"""# 采访记录 - {date_str}
+
+## 本次采访摘要
+{summary}
+
+## 收集的关键信息
+### 事件
+{events_list}
+
+### 人物
+{people_list}
+
+### 时间点
+{timepoints_list}
+
+## 下次采访建议问题
+{questions_list}
+
+## 未完成的话题
+{unfinished_text}
+
+## 采访上下文
+- 当前话题方向: {current_topic or '（无）'}
+- 情绪状态: {emotion_state or '（无）'}
+- 已探索话题: {topic_history_text}
+"""
+
+        with open(file_path, "w", encoding="utf-8") as f:
+            f.write(content)
+
+        logger.info(f"Created session archive: {file_path}")
+        return str(file_path)
+
     def file_exists(self, relative_path: str) -> bool:
         """检查文件是否存在"""
         return (self.base_path / relative_path).exists()
