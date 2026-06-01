@@ -16,39 +16,74 @@
 - [memory_cache_tool.py](file://src/tools/memory_cache_tool.py)
 - [knowledge_query_tool.py](file://src/tools/knowledge_query_tool.py)
 - [memory_archive_tool.py](file://src/tools/memory_archive_tool.py)
+- [app.py](file://src/service/app.py)
+- [session_manager.py](file://src/service/session_manager.py)
+- [sse_response.py](file://src/service/sse_response.py)
+- [interview_runner.py](file://src/service/agent_runners/interview_runner.py)
+- [outline_runner.py](file://src/service/agent_runners/outline_runner.py)
+- [writing_runner.py](file://src/service/agent_runners/writing_runner.py)
+- [interview.py](file://src/service/routes/interview.py)
+- [biography_outline.py](file://src/service/routes/biography_outline.py)
+- [biography_writing.py](file://src/service/routes/biography_writing.py)
+- [requests.py](file://src/service/schemas/requests.py)
 </cite>
+
+## Update Summary
+**Changes Made**
+- Added comprehensive service layer documentation covering FastAPI integration and HTTP-based API exposure
+- Documented new agent runners architecture with SSE streaming support
+- Added SessionManager singleton pattern for concurrent session management
+- Updated architecture overview to reflect service-oriented design
+- Added HTTP API endpoints and request/response schemas
+- Documented real-time streaming capabilities through SSEEmitter
 
 ## Table of Contents
 1. [Introduction](#introduction)
 2. [Project Structure](#project-structure)
 3. [Core Components](#core-components)
 4. [Architecture Overview](#architecture-overview)
-5. [Detailed Component Analysis](#detailed-component-analysis)
-6. [Dependency Analysis](#dependency-analysis)
-7. [Performance Considerations](#performance-considerations)
-8. [Troubleshooting Guide](#troubleshooting-guide)
-9. [Conclusion](#conclusion)
+5. [Service Layer Architecture](#service-layer-architecture)
+6. [Detailed Component Analysis](#detailed-component-analysis)
+7. [HTTP API Endpoints](#http-api-endpoints)
+8. [Dependency Analysis](#dependency-analysis)
+9. [Performance Considerations](#performance-considerations)
+10. [Troubleshooting Guide](#troubleshooting-guide)
+11. [Conclusion](#conclusion)
 
 ## Introduction
-This document provides comprehensive documentation for the core agent system components that power the elderly autobiography writing assistant. It focuses on four primary components:
+This document provides comprehensive documentation for the core agent system components that power the elderly autobiography writing assistant. The system has evolved from a monolithic architecture to a service-oriented architecture with comprehensive HTTP API exposure and real-time streaming capabilities.
+
+The core system now consists of four primary components:
 - ConversationOrchestrator: Central coordinator managing session lifecycle and parallel processing
 - InterviewAgent: Time-constrained conversation manager with adaptive questioning and state transitions
 - ProfileCollectionAgent: Initial user onboarding and information gathering
 - InterviewSessionAgent: Complete session lifecycle management including user coordination and session handoff
 
-The documentation covers implementation details, invocation relationships, public interfaces, usage patterns, configuration options, parameters, return values, and error handling strategies for each component, with concrete examples drawn from the actual codebase.
+**Updated** Added service layer architecture with FastAPI integration, agent runners for SSE streaming, and comprehensive HTTP API endpoints.
 
 ## Project Structure
-The system is organized around a layered architecture:
+The system is now organized around a layered service-oriented architecture:
 - Core orchestration layer: ConversationOrchestrator coordinates services and agents
 - Agent layer: InterviewAgent, ProfileCollectionAgent, InterviewSessionAgent encapsulate conversation flows
-- Services layer: LLMService, MemoryManager, KnowledgeBaseQuerier, QuestionGenerator, ContentSummarizer
-- Tools layer: MemoryCacheTool, KnowledgeQueryTool, MemoryArchiveTool
-- Models and configuration: SessionState, AgentResponse, LLMConfig, ProfileQuestionBank
-- Enums: StateType, PhaseType
+- Service layer: FastAPI application with HTTP endpoints and SSE streaming
+- Agent runners: InterviewRunner, OutlineRunner, WritingRunner for service orchestration
+- Session management: SessionManager singleton for concurrent session control
+- Routes: HTTP endpoints for interview, biography outline, and biography writing services
+- Models and configuration: Enhanced with Pydantic request/response schemas
 
 ```mermaid
 graph TB
+subgraph "Service Layer"
+FAPI["FastAPI Application"]
+SM["SessionManager"]
+SE["SSEEmitter"]
+end
+subgraph "Agent Runners"
+IR["InterviewRunner"]
+OR["OutlineRunner"]
+WR["WritingRunner"]
+BR["BaseAgentRunner"]
+end
 subgraph "Core Layer"
 CO["ConversationOrchestrator"]
 end
@@ -57,136 +92,160 @@ ISA["InterviewSessionAgent"]
 IA["InterviewAgent"]
 PCA["ProfileCollectionAgent"]
 end
-subgraph "Services Layer"
-LLM["LLMService"]
-MM["MemoryManager"]
-KBQ["KnowledgeBaseQuerier"]
-QG["QuestionGenerator"]
-CS["ContentSummarizer"]
+subgraph "Routes"
+INT["Interview Routes"]
+BO["Outline Routes"]
+BW["Writing Routes"]
 end
-subgraph "Tools Layer"
-MCT["MemoryCacheTool"]
-KQT["KnowledgeQueryTool"]
-MAT["MemoryArchiveTool"]
+subgraph "Models & Schemas"
+UR["UserIdRequest"]
+IMR["InterviewMessageRequest"]
+IER["InterviewEndRequest"]
+ERR["ErrorResponse"]
 end
-subgraph "Models & Config"
-SS["SessionState"]
-AR["AgentResponse"]
-LC["LLMConfig"]
-PQB["ProfileQuestionBank"]
-ST["StateType"]
-PT["PhaseType"]
-end
-CO --> LLM
-CO --> MM
-CO --> KBQ
-CO --> QG
-CO --> CS
+FAPI --> INT
+FAPI --> BO
+FAPI --> BW
+INT --> IR
+BO --> OR
+BW --> WR
+IR --> SM
+OR --> SM
+WR --> SM
+IR --> SE
+OR --> SE
+WR --> SE
+IR --> ISA
 ISA --> IA
 ISA --> PCA
-ISA --> MCT
-ISA --> KQT
-ISA --> MAT
-IA --> QG
-IA --> MCT
-IA --> KQT
-IA --> MAT
-PCA --> LLM
-PCA --> MM
-CO --> SS
-CO --> AR
-CO --> LC
-CO --> PQB
-CO --> ST
-CO --> PT
+CO --> IA
+CO --> PCA
+INT --> UR
+INT --> IMR
+INT --> IER
+BO --> UR
+BW --> UR
+INT --> ERR
+BO --> ERR
+BW --> ERR
 ```
 
 **Diagram sources**
-- [conversation_orchestrator.py:138-401](file://src/core/conversation_orchestrator.py#L138-L401)
-- [interview_agent.py:16-184](file://src/agents/interview_agent.py#L16-L184)
-- [profile_collection_agent.py:14-166](file://src/agents/profile_collection_agent.py#L14-L166)
-- [interview_session_agent.py:33-111](file://src/agents/interview_session_agent.py#L33-L111)
+- [app.py:22-59](file://src/service/app.py#L22-L59)
+- [session_manager.py:45-157](file://src/service/session_manager.py#L45-L157)
+- [sse_response.py:23-69](file://src/service/sse_response.py#L23-L69)
+- [interview_runner.py:8-94](file://src/service/agent_runners/interview_runner.py#L8-L94)
+- [outline_runner.py:13-108](file://src/service/agent_runners/outline_runner.py#L13-L108)
+- [writing_runner.py:14-122](file://src/service/agent_runners/writing_runner.py#L14-L122)
+- [interview.py:12-116](file://src/service/routes/interview.py#L12-116)
+- [biography_outline.py:15-133](file://src/service/routes/biography_outline.py#L15-133)
+- [biography_writing.py:16-136](file://src/service/routes/biography_writing.py#L16-136)
+- [requests.py:8-69](file://src/service/schemas/requests.py#L8-69)
 
 **Section sources**
-- [conversation_orchestrator.py:1-658](file://src/core/conversation_orchestrator.py#L1-L658)
-- [interview_agent.py:1-346](file://src/agents/interview_agent.py#L1-L346)
-- [profile_collection_agent.py:1-275](file://src/agents/profile_collection_agent.py#L1-L275)
-- [interview_session_agent.py:1-482](file://src/agents/interview_session_agent.py#L1-L482)
+- [app.py:1-59](file://src/service/app.py#L1-L59)
+- [session_manager.py:1-157](file://src/service/session_manager.py#L1-L157)
+- [sse_response.py:1-69](file://src/service/sse_response.py#L1-L69)
+- [interview_runner.py:1-94](file://src/service/agent_runners/interview_runner.py#L1-L94)
+- [outline_runner.py:1-108](file://src/service/agent_runners/outline_runner.py#L1-L108)
+- [writing_runner.py:1-122](file://src/service/agent_runners/writing_runner.py#L1-L122)
 
 ## Core Components
-This section introduces the four core components and their primary responsibilities.
+This section introduces the four core components and their primary responsibilities, now integrated within the service-oriented architecture.
 
 - ConversationOrchestrator: Central coordinator that manages session lifecycle, parallel processing of emotion detection, knowledge querying, and content summarization, while handling time controls, profile collection, and handoff preparation.
 - InterviewAgent: Time-constrained interview agent that drives conversation flow, identifies key information, queries knowledge base, updates cache, generates adaptive questions, and handles time warnings.
 - ProfileCollectionAgent: Onboarding agent responsible for collecting essential user information through progressive questioning and generating a basic knowledge base.
 - InterviewSessionAgent: Session lifecycle manager that orchestrates between initialization and interview phases, coordinates tools, and manages session handoff.
 
+**Updated** Enhanced with service layer integration and HTTP API exposure capabilities.
+
 Key configuration and models:
 - LLMConfig: Centralized LLM configuration with provider selection and environment-based loading.
 - ProfileQuestionBank: Structured question sets for profile collection with transitions and validation rules.
 - SessionState: Comprehensive session state model tracking progress, coverage, collected items, and conversation history.
 - AgentResponse: Standardized response model for agent outputs.
+- SessionManager: Singleton for managing concurrent sessions per user with thread-safety guarantees.
+- SSEEmitter: Unified SSE streaming response abstraction for real-time communication.
 
 **Section sources**
 - [conversation_orchestrator.py:138-401](file://src/core/conversation_orchestrator.py#L138-L401)
 - [interview_agent.py:16-184](file://src/agents/interview_agent.py#L16-L184)
 - [profile_collection_agent.py:14-166](file://src/agents/profile_collection_agent.py#L14-L166)
 - [interview_session_agent.py:33-111](file://src/agents/interview_session_agent.py#L33-L111)
-- [llm_config.py:10-120](file://src/config/llm_config.py#L10-L120)
-- [profile_questions.py:3-94](file://src/config/profile_questions.py#L3-L94)
-- [session_state.py:24-139](file://src/models/session_state.py#L24-L139)
-- [agent_response.py:5-22](file://src/models/agent_response.py#L5-L22)
+- [session_manager.py:45-157](file://src/service/session_manager.py#L45-L157)
+- [sse_response.py:23-69](file://src/service/sse_response.py#L23-L69)
 
 ## Architecture Overview
-The system follows a coordinated orchestration pattern:
-- ConversationOrchestrator initializes services and session state, then coordinates parallel tasks for emotion detection, knowledge querying, and content summarization.
-- InterviewSessionAgent manages the end-to-end session lifecycle, delegating to ProfileCollectionAgent for onboarding and InterviewAgent for the main interview.
-- InterviewAgent performs time-aware questioning, knowledge integration, and adaptive responses.
-- ProfileCollectionAgent handles structured onboarding with progressive questioning and knowledge base creation.
+The system now follows a comprehensive service-oriented architecture pattern with HTTP API exposure and real-time streaming:
+
+- FastAPI Application: Central HTTP server with CORS middleware and route registration
+- SessionManager: Singleton that enforces mutual exclusivity and manages concurrent sessions
+- Agent Runners: Specialized runners that wrap core agents with SSE streaming capabilities
+- SSEEmitter: Unified streaming response system for real-time event emission
+- Route Handlers: HTTP endpoints that coordinate between API requests and agent execution
+- Core Agents: Underlying conversation and content generation agents
 
 ```mermaid
 sequenceDiagram
 participant Client as "Client"
-participant CO as "ConversationOrchestrator"
-participant IA as "InterviewAgent"
-participant PCA as "ProfileCollectionAgent"
-participant ISA as "InterviewSessionAgent"
-Client->>CO : initialize_session(user_profile)
-CO-->>Client : SessionState
-loop For each user input
-Client->>CO : process_turn(user_input)
-CO->>CO : Parallel tasks (emotion, query, summary)
-CO-->>Client : AgentResponse(message, state_update, handoff_triggered)
-end
-Client->>ISA : start()
-ISA->>ISA : _check_knowledge_base()
-alt Knowledge base exists
-ISA->>IA : start(resume_prompt)
-IA-->>ISA : Opening message
-else New user
-ISA->>PCA : start()
-PCA-->>ISA : Welcome message
-end
-loop Interview session
-Client->>ISA : handle_user_input(user_input)
-alt Profile collection phase
-ISA->>PCA : handle_input(user_input)
-PCA-->>ISA : Next question or completion
-else Interview phase
-ISA->>IA : handle_input(user_input)
-IA-->>ISA : Next question or completion
-end
-end
-ISA->>IA : generate_ending()
-IA-->>ISA : Ending message
-ISA-->>Client : Final message
+participant API as "FastAPI App"
+participant Router as "Route Handler"
+participant Runner as "Agent Runner"
+participant SM as "SessionManager"
+participant Agent as "Core Agent"
+Client->>API : HTTP Request (SSE)
+API->>Router : Route Dispatch
+Router->>SM : acquire(user_id, agent_type)
+SM-->>Router : session_id
+Router->>Runner : start() / run()
+Runner->>Agent : Execute core logic
+Agent-->>Runner : Results
+Runner->>Runner : Emit SSE Events
+Runner-->>Router : Stream chunks
+Router-->>Client : EventSourceResponse
+Client->>API : HTTP Request (status/check)
+API->>Router : Status endpoint
+Router->>SM : get_active_session(user_id)
+SM-->>Router : Session info
+Router-->>Client : JSON status
 ```
 
 **Diagram sources**
-- [conversation_orchestrator.py:198-343](file://src/core/conversation_orchestrator.py#L198-L343)
-- [interview_session_agent.py:112-392](file://src/agents/interview_session_agent.py#L112-L392)
-- [interview_agent.py:80-184](file://src/agents/interview_agent.py#L80-L184)
-- [profile_collection_agent.py:98-166](file://src/agents/profile_collection_agent.py#L98-L166)
+- [app.py:22-59](file://src/service/app.py#L22-L59)
+- [interview_runner.py:16-94](file://src/service/agent_runners/interview_runner.py#L16-L94)
+- [session_manager.py:87-117](file://src/service/session_manager.py#L87-L117)
+- [interview.py:15-116](file://src/service/routes/interview.py#L15-L116)
+
+## Service Layer Architecture
+The service layer provides HTTP-based API exposure for all agent functionalities with comprehensive streaming support:
+
+### FastAPI Application Factory
+The application creates a FastAPI instance with:
+- CORS middleware for cross-origin requests
+- Route registration for all agent services
+- Application lifespan for service initialization
+- Health check endpoint for monitoring
+
+### Session Management
+SessionManager implements a thread-safe singleton pattern:
+- Enforces mutual exclusivity: only one agent active per user
+- Supports interview session persistence across multiple messages
+- Provides session acquisition, release, and status tracking
+- Handles session conflict resolution with detailed error reporting
+
+### SSE Streaming System
+SSEEmitter provides unified streaming capabilities:
+- Async queue-based event emission
+- Automatic timestamp injection
+- Error event handling with recoverable flags
+- Done event signaling for stream termination
+- Integration with FastAPI EventSourceResponse
+
+**Section sources**
+- [app.py:8-59](file://src/service/app.py#L8-L59)
+- [session_manager.py:45-157](file://src/service/session_manager.py#L45-L157)
+- [sse_response.py:23-69](file://src/service/sse_response.py#L23-L69)
 
 ## Detailed Component Analysis
 
@@ -422,46 +481,127 @@ InterviewSessionAgent --> SessionPhase : "tracks"
 **Section sources**
 - [interview_session_agent.py:33-392](file://src/agents/interview_session_agent.py#L33-L392)
 
+### InterviewRunner
+**New** Agent runner that wraps InterviewSessionAgent for HTTP/SSE streaming.
+
+Public interface:
+- start(): Starts new interview session, stores agent instance, and emits session events.
+- handle_message(message): Processes user messages, tracks phase changes, and streams responses.
+- end(): Ends session and returns JSON summary.
+
+Key behaviors:
+- Session persistence: Stores InterviewSessionAgent instances in SessionManager for multi-message conversations.
+- Phase tracking: Monitors and emits phase change events during conversation flow.
+- Error handling: Emits structured error events with recoverable flags.
+- SSE streaming: Uses SSEEmitter for real-time event emission.
+
+**Section sources**
+- [interview_runner.py:8-94](file://src/service/agent_runners/interview_runner.py#L8-L94)
+
+### OutlineRunner
+**New** Biography outline agent runner with comprehensive SSE progress events.
+
+Public interface:
+- run(): Executes outline generation with detailed progress streaming.
+
+Progress events:
+- task_started: Initial task notification with mode information
+- scanning: Material scanning progress with step indicators
+- analyzing: Analysis completion notification
+- generating: Generation progress with chapter counts
+- completed: Final completion with outline data and changes
+- failed: Error handling with detailed error information
+
+**Section sources**
+- [outline_runner.py:13-108](file://src/service/agent_runners/outline_runner.py#L13-L108)
+
+### WritingRunner
+**New** Biography writing agent runner with chapter-by-chapter streaming.
+
+Public interface:
+- run(): Executes writing process with detailed progress streaming.
+
+Progress events:
+- task_started: Initial task notification with chapter count
+- loading_tasks: Task loading progress with chapter IDs
+- saved: Individual chapter completion with progress tracking
+- merging: Final merging stage notification
+- completed: Completion with word count and file paths
+- failed: Error handling with detailed error information
+
+**Section sources**
+- [writing_runner.py:14-122](file://src/service/agent_runners/writing_runner.py#L14-L122)
+
+## HTTP API Endpoints
+**New** Comprehensive HTTP API endpoints for all agent services with SSE streaming support.
+
+### Interview Service Endpoints
+- POST `/api/interview/start`: Start new interview session with SSE streaming
+- POST `/api/interview/message`: Send message in active interview session
+- POST `/api/interview/end`: End interview session with JSON summary
+- GET `/api/interview/status/{user_id}/{session_id}`: Get session status
+
+### Biography Outline Service Endpoints
+- POST `/api/biography/outline/generate`: Generate/update outline with SSE streaming
+- GET `/api/biography/outline/{user_id}`: Get current saved outline
+- PUT `/api/biography/outline/{user_id}/chapters/{chapter_id}/confirm`: Confirm draft chapter
+
+### Biography Writing Service Endpoints
+- POST `/api/biography/writing/run`: Start writing task with SSE streaming
+- GET `/api/biography/writing/{user_id}/chapters`: List written chapters
+- GET `/api/biography/writing/{user_id}/full`: Get merged full biography
+
+**Section sources**
+- [interview.py:15-116](file://src/service/routes/interview.py#L15-L116)
+- [biography_outline.py:33-133](file://src/service/routes/biography_outline.py#L33-L133)
+- [biography_writing.py:34-136](file://src/service/routes/biography_writing.py#L34-L136)
+
 ## Dependency Analysis
-This section maps the dependencies between components and highlights coupling and cohesion.
+This section maps the dependencies between components and highlights coupling and cohesion in the service-oriented architecture.
 
 ```mermaid
 graph TB
-CO["ConversationOrchestrator"] --> LLM["LLMService"]
-CO --> MM["MemoryManager"]
-CO --> KBQ["KnowledgeBaseQuerier"]
-CO --> QG["QuestionGenerator"]
-CO --> CS["ContentSummarizer"]
-CO --> SS["SessionState"]
-CO --> AR["AgentResponse"]
-ISA["InterviewSessionAgent"] --> IA["InterviewAgent"]
+FAPI["FastAPI Application"] --> INT["Interview Routes"]
+FAPI --> BO["Outline Routes"]
+FAPI --> BW["Writing Routes"]
+INT --> IR["InterviewRunner"]
+BO --> OR["OutlineRunner"]
+BW --> WR["WritingRunner"]
+IR --> SM["SessionManager"]
+OR --> SM
+WR --> SM
+IR --> SE["SSEEmitter"]
+OR --> SE
+WR --> SE
+IR --> ISA["InterviewSessionAgent"]
+ISA --> IA["InterviewAgent"]
 ISA --> PCA["ProfileCollectionAgent"]
-ISA --> MCT["MemoryCacheTool"]
-ISA --> KQT["KnowledgeQueryTool"]
-ISA --> MAT["MemoryArchiveTool"]
-IA --> QG
-IA --> MCT
-IA --> KQT
-IA --> MAT
-PCA --> LLM
-PCA --> MM
-CO --> LC["LLMConfig"]
-CO --> PQB["ProfileQuestionBank"]
-CO --> ST["StateType"]
-CO --> PT["PhaseType"]
+CO["ConversationOrchestrator"] --> IA
+CO --> PCA
+INT --> UR["UserIdRequest"]
+INT --> IMR["InterviewMessageRequest"]
+INT --> IER["InterviewEndRequest"]
+BO --> UR
+BW --> UR
+INT --> ERR["ErrorResponse"]
+BO --> ERR
+BW --> ERR
 ```
 
 **Diagram sources**
-- [conversation_orchestrator.py:163-187](file://src/core/conversation_orchestrator.py#L163-L187)
-- [interview_session_agent.py:54-111](file://src/agents/interview_session_agent.py#L54-L111)
-- [interview_agent.py:37-78](file://src/agents/interview_agent.py#L37-L78)
-- [profile_collection_agent.py:34-48](file://src/agents/profile_collection_agent.py#L34-L48)
+- [app.py:40-51](file://src/service/app.py#L40-L51)
+- [interview_runner.py:11-24](file://src/service/agent_runners/interview_runner.py#L11-L24)
+- [session_manager.py:14-29](file://src/service/session_manager.py#L14-L29)
+- [interview.py:15-39](file://src/service/routes/interview.py#L15-L39)
+- [biography_outline.py:34-61](file://src/service/routes/biography_outline.py#L34-L61)
+- [biography_writing.py:35-62](file://src/service/routes/biography_writing.py#L35-L62)
 
 **Section sources**
-- [conversation_orchestrator.py:1-658](file://src/core/conversation_orchestrator.py#L1-L658)
-- [interview_session_agent.py:1-482](file://src/agents/interview_session_agent.py#L1-L482)
-- [interview_agent.py:1-346](file://src/agents/interview_agent.py#L1-L346)
-- [profile_collection_agent.py:1-275](file://src/agents/profile_collection_agent.py#L1-L275)
+- [app.py:1-59](file://src/service/app.py#L1-L59)
+- [session_manager.py:1-157](file://src/service/session_manager.py#L1-L157)
+- [interview_runner.py:1-94](file://src/service/agent_runners/interview_runner.py#L1-L94)
+- [outline_runner.py:1-108](file://src/service/agent_runners/outline_runner.py#L1-L108)
+- [writing_runner.py:1-122](file://src/service/agent_runners/writing_runner.py#L1-L122)
 
 ## Performance Considerations
 - Parallel processing: ConversationOrchestrator runs emotion detection, knowledge querying, and content summarization concurrently with timeout protection to prevent blocking.
@@ -469,8 +609,9 @@ CO --> PT["PhaseType"]
 - Caching: MemoryCacheTool reduces repeated knowledge base queries by storing relevant context with tag-based retrieval.
 - Asynchronous operations: InterviewAgent uses async/await for I/O-bound operations to maximize throughput.
 - Configuration tuning: LLMConfig allows adjusting provider, model, temperature, and token limits to balance quality and cost.
-
-[No sources needed since this section provides general guidance]
+- **New** Concurrent session management: SessionManager provides thread-safe session handling with asyncio.Lock for high-concurrency scenarios.
+- **New** SSE streaming efficiency: SSEEmitter uses async queues for non-blocking event emission during long-running operations.
+- **New** HTTP API optimization: FastAPI application uses efficient routing and middleware for low-latency request handling.
 
 ## Troubleshooting Guide
 Common issues and resolutions:
@@ -478,11 +619,27 @@ Common issues and resolutions:
 - Session time-up: When session duration is reached, ConversationOrchestrator triggers time-up handling and prepares an end guide with handoff.
 - Knowledge base queries: InterviewAgent and InterviewSessionAgent rely on KnowledgeQueryTool; ensure target_path includes user_id and that required directories exist.
 - Initialization failures: ProfileCollectionAgent completes when required fields are collected or when time limit is exceeded; verify prompt templates and extraction logic.
+- **New** Session conflicts: SessionManager raises SessionConflictError when users attempt to start conflicting agent types; check active session status before acquiring new sessions.
+- **New** SSE streaming issues: Verify SSEEmitter queue operations and ensure proper event formatting; check for closed streams that prevent further emissions.
+- **New** HTTP API validation: Pydantic request schemas validate user_id format and message content; ensure requests meet validation requirements.
+- **New** Agent runner errors: InterviewRunner, OutlineRunner, and WritingRunner emit structured error events with recoverable flags for better client-side error handling.
 
 **Section sources**
 - [conversation_orchestrator.py:286-301](file://src/core/conversation_orchestrator.py#L286-L301)
 - [interview_agent.py:170-184](file://src/agents/interview_agent.py#L170-L184)
 - [interview_session_agent.py:344-358](file://src/agents/interview_session_agent.py#L344-L358)
+- [session_manager.py:34-43](file://src/service/session_manager.py#L34-L43)
+- [sse_response.py:48-54](file://src/service/sse_response.py#L48-L54)
+- [interview_runner.py:47-50](file://src/service/agent_runners/interview_runner.py#L47-L50)
 
 ## Conclusion
-The core agent system integrates a central orchestrator with specialized agents to deliver a seamless, time-aware, and knowledge-enhanced conversation experience. ConversationOrchestrator coordinates parallel processing and session lifecycle, InterviewAgent manages adaptive questioning under time constraints, ProfileCollectionAgent ensures robust onboarding, and InterviewSessionAgent orchestrates the end-to-end session flow. Together, they provide a scalable foundation for elderly autobiography interviews with strong error handling, caching, and handoff capabilities.
+The core agent system has successfully evolved from a monolithic architecture to a comprehensive service-oriented architecture with HTTP API exposure and real-time streaming capabilities. The new architecture provides:
+
+- **Service Layer Integration**: FastAPI application with comprehensive route handlers for all agent services
+- **Real-time Streaming**: SSEEmitter enables real-time event emission for long-running operations
+- **Concurrent Session Management**: SessionManager singleton ensures thread-safe, mutually exclusive session handling
+- **HTTP API Exposure**: Complete RESTful API with SSE streaming for interview, outline generation, and writing services
+- **Enhanced Error Handling**: Structured error events with recoverable flags for better client-side handling
+- **Scalable Architecture**: Modular design supports future expansion and maintenance
+
+The system maintains its core functionality while adding robust service layer capabilities that enable external clients to interact with the agent system through standardized HTTP APIs with real-time streaming support. This transformation provides a solid foundation for deployment in production environments while preserving the intelligent conversation and content generation capabilities that make the system effective for elderly autobiography interviews.

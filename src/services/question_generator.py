@@ -17,6 +17,8 @@ class QuestionResult:
     question: str
     source: str  # "generated" | "candidate_question"
     candidate_question_id: Optional[str] = None
+    topic_switched: bool = False
+    new_topic: Optional[str] = None
 
 
 class QuestionGenerator:
@@ -220,6 +222,11 @@ class QuestionGenerator:
         memory_context: Optional[str] = None,
         conversation_history: Optional[List[Dict]] = None,
         candidate_questions: Optional[List[Dict[str, str]]] = None,
+        should_switch_topic: bool = False,
+        current_topic: Optional[str] = None,
+        topic_turn_count: int = 0,
+        topic_history: Optional[List[str]] = None,
+        address_style: str = "您",
     ) -> QuestionResult:
         """
         生成下一个问题（InterviewAgent专用接口）
@@ -241,6 +248,14 @@ class QuestionGenerator:
                 lines.append(f"{i}. [{cq['id']}] {cq['question']}")
             candidate_questions_formatted = "\n".join(lines)
 
+        # 构建话题上下文
+        topic_context = ""
+        if current_topic:
+            history_str = ', '.join(topic_history[-5:]) if topic_history else '无'
+            topic_context = f"""\n## 当前话题状态\n- 当前话题: {current_topic}\n- 已讨论轮次: {topic_turn_count}\n- 历史话题: {history_str}\n"""
+            if should_switch_topic:
+                topic_context += f"""- ⚠️ 建议换话题: 当前话题已讨论较久，请评估是否需要自然过渡到新话题。\n  - 如果被采访者的回答越来越短或重复，果断换话题\n  - 如果被采访者仍在分享新的重要细节，可以再追问1-2次\n  - 换话题时要自然过渡，不要突兀\n  - 避免重复已聊过的话题: {history_str}\n"""
+
         # 构建问题生成prompt
         prompt = f"""## 任务
 基于用户的回答、记忆上下文和候选问题列表，决定下一个采访问题。
@@ -253,6 +268,10 @@ class QuestionGenerator:
 
 ## 候选问题（家属提前准备但尚未询问）
 {candidate_questions_formatted}
+{topic_context}
+## 对被采访者的称呼
+{address_style or "您"}
+请在生成的问题中使用此称呼，保持亲切自然的语气，不要使用固定的“老人家”称呼。
 
 ## 规则
 1. 如果某个候选问题与用户刚才的回答明显相关，选择该问题并改写成自然、温和的追问。
@@ -266,7 +285,9 @@ class QuestionGenerator:
 {{
   "question": "最终问出去的问题文本",
   "source": "candidate_question" 或 "generated",
-  "candidate_question_id": "q1" 或 null
+  "candidate_question_id": "q1" 或 null,
+  "topic_switched": true 或 false,
+  "new_topic": "新话题描述" 或 null
 }}
 """
 
@@ -289,6 +310,8 @@ class QuestionGenerator:
                 question = parsed.get("question", "")
                 source = parsed.get("source", "generated")
                 qid = parsed.get("candidate_question_id")
+                topic_switched = parsed.get("topic_switched", False)
+                new_topic = parsed.get("new_topic")
 
                 if not question:
                     # 降级：如果 question 为空，使用默认问题
@@ -314,6 +337,8 @@ class QuestionGenerator:
                     question=question,
                     source=source,
                     candidate_question_id=qid,
+                    topic_switched=bool(topic_switched),
+                    new_topic=new_topic,
                 )
             except (json.JSONDecodeError, ValueError, TypeError) as e:
                 logger.warning(f"Failed to parse question generation JSON: {e}. Content: {content[:200]}")

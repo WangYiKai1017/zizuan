@@ -130,11 +130,16 @@ class MemoryManager:
             OrganizedMemory: 整理后的结构化记忆
         """
         # 1. 格式化输入变量
+        phase_instruction = (
+            f"{PHASE_LABELS.get(current_phase, str(current_phase))}\n"
+            "注意：请根据内容自动判断每个事件/记忆属于哪个人生阶段"
+            "（童年/少年/青年/中年/老年），不需要依赖对话中的标记。"
+        )
         variables = {
             "conversation_content": self._format_conversation_content(turns),
             "existing_timeline": self._format_existing_timeline(),
             "existing_people": self._format_existing_people(),
-            "current_phase": PHASE_LABELS.get(current_phase, str(current_phase)),
+            "current_phase": phase_instruction,
         }
         
         # 2. 调用 LLM 整理
@@ -155,7 +160,29 @@ class MemoryManager:
         
         return result
     
-    async def _apply_organized_memory(self, memory: OrganizedMemory) -> Dict[str, str]:
+    def _normalize_link_path(self, path: str) -> str:
+        """Normalize a stored file path into a wiki-link path relative to
+        the user's KB root (knowledge_base/{user_id}/).
+
+        Delegates to the underlying MarkdownFileManager when available so
+        any cross-reference written into markdown content stays in the
+        canonical ``[display](relative/path.md)`` form.
+        """
+        if not path:
+            return ""
+        file_manager = getattr(self.repository, "file_manager", None)
+        if file_manager is not None and hasattr(file_manager, "_normalize_wiki_link"):
+            return file_manager._normalize_wiki_link(path)
+        return str(path)
+
+    def _format_link(self, display_text: str, path: str) -> str:
+        """Format a markdown wiki link with a normalized relative path."""
+        file_manager = getattr(self.repository, "file_manager", None)
+        if file_manager is not None and hasattr(file_manager, "format_wiki_link"):
+            return file_manager.format_wiki_link(display_text, path)
+        return f"[{display_text or ''}]({self._normalize_link_path(path)})"
+
+    async def _apply_organized_memory(self, memory: OrganizedMemory) -> Dict[str, List[str]]:
         """
         应用整理结果到存储
         
@@ -163,7 +190,7 @@ class MemoryManager:
             memory: 整理后的结构化记忆
             
         Returns:
-            创建的文件路径字典
+            创建的文件路径字典（路径以 KB 根目录为基准的相对路径）
         """
         results = {"events": [], "people": [], "timeline": []}
         
@@ -182,8 +209,12 @@ class MemoryManager:
         
         if tasks:
             paths = await asyncio.gather(*tasks, return_exceptions=True)
-            results["events"] = [p for p in paths[:len(memory.events)] if isinstance(p, str)]
-            results["people"] = [p for p in paths[len(memory.events):] if isinstance(p, str)]
+            event_paths = [p for p in paths[:len(memory.events)] if isinstance(p, str)]
+            people_paths = [p for p in paths[len(memory.events):] if isinstance(p, str)]
+            # Normalize stored paths so any consumer rendering them as
+            # markdown links gets a clean KB-relative form.
+            results["events"] = [self._normalize_link_path(p) for p in event_paths]
+            results["people"] = [self._normalize_link_path(p) for p in people_paths]
         
         # 更新画像记忆
         if memory.profile_updates:
@@ -216,10 +247,10 @@ class MemoryManager:
         lines = []
         for i, turn in enumerate(turns, 1):
             lines.append(f"### 第 {i} 轮")
-            lines.append(f"时间：{turn["timestamp"]}")
-            lines.append(f"用户：{turn["user_input"]}")
-            if "agent_response" in turn.keys():
-                lines.append(f"助手：{turn["agent_response"]}")
+            lines.append(f"时间：{turn.timestamp}")
+            lines.append(f"用户：{turn.user_input}")
+            if turn.agent_response is not None:
+                lines.append(f"助手：{turn.agent_response}")
             lines.append("")
         return "\n".join(lines)
     
@@ -461,7 +492,11 @@ class MemoryManager:
         # 更新长期记忆
         if summary.extracted_info.events or summary.extracted_info.people:
             paths = await self.update_long_term(summary.extracted_info)
-            results["files_created"] = list(paths.values())
+            # Normalize file paths so they can be embedded into markdown
+            # cross-references without leaking absolute paths.
+            results["files_created"] = [
+                self._normalize_link_path(p) for p in paths.values()
+            ]
             results["events_saved"] = len(summary.extracted_info.events)
             results["people_saved"] = len(summary.extracted_info.people)
         
