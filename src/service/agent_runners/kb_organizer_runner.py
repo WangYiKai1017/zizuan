@@ -5,7 +5,7 @@ from pathlib import Path
 from src.service.agent_runners.base_runner import BaseAgentRunner
 from src.service.sse_response import SSEEmitter
 from src.agents.kb_organizer_agent import KBOrganizerAgent
-from src.config.llm_config import LLMConfig
+from src.config.llm_config import get_default_config
 from src.services.llm_service import LLMService
 from src.services.kb_organization_service import KBOrganizationService
 from src.storage.file_operations import FileOperations
@@ -26,7 +26,7 @@ class KBOrganizerRunner(BaseAgentRunner):
         parent = str(target.parent)
         folder_name = target.name
 
-        config = LLMConfig.from_env()
+        config = get_default_config()
         llm_service = LLMService(config)
 
         source_fm = MarkdownFileManager(base_path=parent, conversation_id=folder_name)

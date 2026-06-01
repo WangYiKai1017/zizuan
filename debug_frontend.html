@@ -1,0 +1,1053 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>自传 Agent 调试面板</title>
+<script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js" defer></script>
+<style>
+  :root {
+    color-scheme: light;
+    --background: 0 0% 100%;
+    --foreground: 222.2 84% 4.9%;
+    --card: 0 0% 100%;
+    --card-foreground: 222.2 84% 4.9%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 222.2 84% 4.9%;
+    --primary: 222.2 47.4% 11.2%;
+    --primary-foreground: 210 40% 98%;
+    --secondary: 210 40% 96.1%;
+    --secondary-foreground: 222.2 47.4% 11.2%;
+    --muted: 210 40% 96.1%;
+    --muted-foreground: 215.4 16.3% 46.9%;
+    --accent: 210 40% 96.1%;
+    --accent-foreground: 222.2 47.4% 11.2%;
+    --destructive: 0 84.2% 60.2%;
+    --destructive-foreground: 210 40% 98%;
+    --border: 214.3 31.8% 91.4%;
+    --input: 214.3 31.8% 91.4%;
+    --ring: 222.2 84% 4.9%;
+    --success: 142.1 76.2% 36.3%;
+    --warning: 38 92% 50%;
+    --info: 199 89% 48%;
+    --radius: 8px;
+  }
+
+  * { box-sizing: border-box; }
+  html { min-height: 100%; }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    background: hsl(var(--background));
+    color: hsl(var(--foreground));
+    font: 14px/1.5 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    letter-spacing: 0;
+  }
+  body::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    background:
+      linear-gradient(to bottom, hsl(210 40% 98%), hsl(var(--background)) 360px),
+      linear-gradient(to right, hsl(214.3 31.8% 91.4% / .55) 1px, transparent 1px),
+      linear-gradient(to bottom, hsl(214.3 31.8% 91.4% / .45) 1px, transparent 1px);
+    background-size: auto, 48px 48px, 48px 48px;
+    mask-image: linear-gradient(to bottom, black, transparent 620px);
+    z-index: -1;
+  }
+  header {
+    position: sticky;
+    top: 0;
+    z-index: 20;
+    display: grid;
+    grid-template-columns: minmax(220px, 1fr) auto minmax(240px, 330px) auto 154px auto;
+    gap: 12px;
+    align-items: center;
+    padding: 12px 24px;
+    background: hsl(var(--background) / .9);
+    border-bottom: 1px solid hsl(var(--border));
+    backdrop-filter: blur(14px);
+  }
+  header > span:not([class]) { display: none; }
+  .brand {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+  }
+  .brand-icon {
+    display: inline-grid;
+    place-items: center;
+    width: 34px;
+    height: 34px;
+    border: 1px solid hsl(var(--border));
+    border-radius: 8px;
+    background: hsl(var(--secondary));
+    color: hsl(var(--foreground));
+  }
+  .brand-title { display: grid; gap: 1px; }
+  header strong { color: hsl(var(--foreground)); font-size: 14px; font-weight: 650; line-height: 1.15; }
+  .brand-subtitle { color: hsl(var(--muted-foreground)); font-size: 12px; }
+  label {
+    color: hsl(var(--muted-foreground));
+    font-size: 12px;
+    font-weight: 500;
+    white-space: nowrap;
+  }
+  input, textarea {
+    border: 1px solid hsl(var(--input));
+    border-radius: 6px;
+    background: hsl(var(--background));
+    color: hsl(var(--foreground));
+    font: inherit;
+    box-shadow: 0 1px 2px hsl(222.2 84% 4.9% / .04);
+    transition: border-color .15s ease, box-shadow .15s ease, background-color .15s ease;
+  }
+  input { height: 36px; padding: 7px 10px; }
+  textarea { width: 100%; min-height: 72px; padding: 8px 10px; resize: vertical; }
+  input::placeholder, textarea::placeholder { color: hsl(var(--muted-foreground)); }
+  input:focus, textarea:focus {
+    outline: none;
+    border-color: hsl(var(--ring));
+    box-shadow: 0 0 0 2px hsl(var(--ring) / .24);
+  }
+  #apiBase { width: 100%; }
+  #userId { width: 154px; }
+  .dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: hsl(var(--destructive));
+    box-shadow: 0 0 0 3px hsl(var(--destructive) / .16);
+  }
+  .dot.ok {
+    background: hsl(var(--success));
+    box-shadow: 0 0 0 3px hsl(var(--success) / .16);
+  }
+
+  nav {
+    display: flex;
+    gap: 4px;
+    max-width: 1160px;
+    margin: 16px auto 0;
+    padding: 4px;
+    border: 1px solid hsl(var(--border));
+    border-radius: 10px;
+    background: hsl(var(--muted) / .5);
+    overflow-x: auto;
+  }
+  nav button {
+    border: 0;
+    min-height: 34px;
+    border-radius: 7px;
+    margin: 0;
+    padding: 7px 12px;
+    background: transparent;
+    color: hsl(var(--muted-foreground));
+    cursor: pointer;
+    white-space: nowrap;
+    font-weight: 500;
+  }
+  nav button:hover { color: hsl(var(--foreground)); background: hsl(var(--accent) / .5); }
+  nav button.active {
+    color: hsl(var(--foreground));
+    background: hsl(var(--background));
+    box-shadow: 0 1px 2px hsl(222.2 84% 4.9% / .08);
+  }
+  main { max-width: 1160px; margin: 0 auto; padding: 16px 16px 28px; }
+  .panel { display: none; }
+  .panel.active { display: block; }
+  .grid { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 16px; align-items: start; }
+  .card {
+    background: hsl(var(--card) / .96);
+    border: 1px solid hsl(var(--border));
+    border-radius: var(--radius);
+    padding: 18px;
+    margin-bottom: 16px;
+    box-shadow: 0 1px 2px hsl(222.2 84% 4.9% / .05), 0 16px 42px hsl(222.2 84% 4.9% / .05);
+  }
+  .subcard {
+    margin-top: 14px;
+    padding: 14px;
+    border: 1px solid hsl(var(--border));
+    border-radius: var(--radius);
+    background: hsl(var(--muted) / .25);
+  }
+  .card h3, .card h4, .subcard h4 {
+    margin: 0 0 10px;
+    color: hsl(var(--foreground));
+    font-weight: 650;
+    letter-spacing: 0;
+  }
+  .card h3 { font-size: 18px; line-height: 1.2; }
+  .card h4, .subcard h4 { font-size: 14px; }
+  .hint { margin: 0 0 12px; color: hsl(var(--muted-foreground)); font-size: 13px; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 8px; }
+  .spacer { flex: 1; }
+  button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 7px;
+    min-height: 36px;
+    border: 1px solid hsl(var(--border));
+    border-radius: 6px;
+    padding: 7px 12px;
+    background: hsl(var(--background));
+    color: hsl(var(--foreground));
+    cursor: pointer;
+    font: inherit;
+    font-weight: 500;
+    line-height: 1;
+    box-shadow: 0 1px 2px hsl(222.2 84% 4.9% / .05);
+    transition: background-color .15s ease, color .15s ease, border-color .15s ease, box-shadow .15s ease, opacity .15s ease;
+  }
+  button:hover { background: hsl(var(--accent)); color: hsl(var(--accent-foreground)); }
+  button:focus-visible { outline: none; box-shadow: 0 0 0 2px hsl(var(--ring) / .36); }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  button.primary {
+    border-color: hsl(var(--primary));
+    background: hsl(var(--primary));
+    color: hsl(var(--primary-foreground));
+  }
+  button.primary:hover { background: hsl(var(--primary) / .9); }
+  button.warn {
+    border-color: hsl(var(--warning) / .42);
+    color: hsl(var(--warning));
+    background: hsl(var(--warning) / .08);
+  }
+  button.warn:hover { background: hsl(var(--warning) / .14); }
+  button.success {
+    border-color: hsl(var(--success) / .42);
+    color: hsl(var(--success));
+    background: hsl(var(--success) / .08);
+  }
+  button.success:hover { background: hsl(var(--success) / .14); }
+  i[data-lucide] { width: 15px; height: 15px; flex: none; }
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 22px;
+    padding: 2px 8px;
+    border: 1px solid hsl(var(--border));
+    border-radius: 999px;
+    background: hsl(var(--secondary));
+    color: hsl(var(--secondary-foreground));
+    font-size: 12px;
+    font-weight: 500;
+    white-space: nowrap;
+  }
+  .badge.ok { border-color: hsl(var(--success) / .22); background: hsl(var(--success) / .1); color: hsl(142 72% 29%); }
+  .badge.warn { border-color: hsl(var(--warning) / .28); background: hsl(var(--warning) / .12); color: hsl(32 95% 34%); }
+  .badge.err { border-color: hsl(var(--destructive) / .28); background: hsl(var(--destructive) / .1); color: hsl(0 74% 42%); }
+  .spinner {
+    display: none;
+    width: 14px;
+    height: 14px;
+    border: 2px solid hsl(var(--border));
+    border-top-color: hsl(var(--foreground));
+    border-radius: 50%;
+    animation: spin .65s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .chat {
+    min-height: 310px;
+    max-height: 560px;
+    overflow-y: auto;
+    padding: 14px;
+    border: 1px solid hsl(var(--border));
+    border-radius: var(--radius);
+    background: hsl(var(--muted) / .18);
+  }
+  .msg {
+    max-width: 82%;
+    margin: 0 0 10px;
+    padding: 10px 12px;
+    border: 1px solid hsl(var(--border));
+    border-radius: var(--radius);
+    white-space: pre-wrap;
+    box-shadow: 0 1px 2px hsl(222.2 84% 4.9% / .05);
+  }
+  .msg.user {
+    margin-left: auto;
+    border-color: hsl(var(--primary) / .32);
+    background: hsl(var(--primary));
+    color: hsl(var(--primary-foreground));
+  }
+  .msg.agent { background: hsl(var(--card)); }
+  .msg.system {
+    max-width: 100%;
+    margin-inline: auto;
+    border-style: dashed;
+    background: transparent;
+    color: hsl(var(--muted-foreground));
+    text-align: center;
+    font-size: 12px;
+    box-shadow: none;
+  }
+  .meta { margin-bottom: 4px; color: hsl(var(--muted-foreground)); font-size: 11px; }
+  .input-row { display: none; gap: 8px; margin-top: 12px; }
+  .input-row input { flex: 1; }
+
+  .log {
+    min-height: 44px;
+    max-height: 360px;
+    overflow: auto;
+    padding: 12px;
+    border: 1px solid hsl(var(--border));
+    border-radius: var(--radius);
+    background: hsl(210 40% 98%);
+    font: 12px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  .line.info { color: hsl(var(--muted-foreground)); }
+  .line.progress { color: hsl(199 89% 34%); }
+  .line.success { color: hsl(142 72% 29%); }
+  .line.warn { color: hsl(32 95% 34%); }
+  .line.error { color: hsl(0 74% 42%); }
+
+  .step {
+    display: grid;
+    grid-template-columns: 32px 1fr auto;
+    gap: 12px;
+    align-items: center;
+    padding: 12px 0;
+    border-bottom: 1px solid hsl(var(--border));
+  }
+  .step:last-child { border-bottom: 0; }
+  .num {
+    display: grid;
+    place-items: center;
+    width: 30px;
+    height: 30px;
+    border: 1px solid hsl(var(--border));
+    border-radius: 50%;
+    background: hsl(var(--secondary));
+    color: hsl(var(--muted-foreground));
+    font-size: 12px;
+    font-weight: 600;
+  }
+  .step.done .num {
+    border-color: hsl(var(--success) / .35);
+    background: hsl(var(--success));
+    color: hsl(144 61% 8%);
+  }
+  .step.current .num {
+    border-color: hsl(var(--warning) / .36);
+    background: hsl(var(--warning));
+    color: hsl(30 60% 8%);
+  }
+  .step-title { font-weight: 600; }
+  .step-desc { color: hsl(var(--muted-foreground)); font-size: 12px; }
+
+  .outline-chapter {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    gap: 8px;
+    align-items: center;
+    padding: 10px 12px;
+    margin-bottom: 8px;
+    border: 1px solid hsl(var(--border));
+    border-radius: var(--radius);
+    background: hsl(var(--muted) / .18);
+  }
+  .chapter-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .file-tree {
+    max-height: 620px;
+    overflow: auto;
+    padding: 10px;
+    border: 1px solid hsl(var(--border));
+    border-radius: var(--radius);
+    background: hsl(var(--muted) / .16);
+    font: 13px/1.75 ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  .dir, .file { cursor: pointer; }
+  .dir { color: hsl(var(--foreground)); font-weight: 600; }
+  .file { color: hsl(var(--muted-foreground)); padding-left: 16px; border-radius: 4px; }
+  .dir:hover, .file:hover { background: hsl(var(--accent)); color: hsl(var(--accent-foreground)); text-decoration: none; }
+  .children { padding-left: 15px; }
+  pre.content {
+    max-height: 540px;
+    overflow: auto;
+    white-space: pre-wrap;
+    padding: 12px;
+    border: 1px solid hsl(var(--border));
+    border-radius: var(--radius);
+    background: hsl(210 40% 98%);
+    font: 12px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  @media (max-width: 860px) {
+    header { grid-template-columns: 1fr; }
+    #apiBase, #userId { width: 100%; }
+    .grid { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <div class="brand">
+    <span class="brand-icon"><i data-lucide="book-open-text"></i></span>
+    <span class="brand-title">
+      <strong>自传 Agent 调试面板</strong>
+      <span class="brand-subtitle">Interview to biography workflow</span>
+    </span>
+  </div>
+  <span></span>
+  <label for="apiBase">API 地址</label>
+  <input id="apiBase" value="" placeholder="留空=自动，本地调试默认 http://127.0.0.1:8000">
+  <label for="userId">用户 ID</label>
+  <input id="userId" value="test_user001" placeholder="test_user001">
+  <div class="row">
+    <span id="healthDot" class="dot" title="未连接"></span>
+    <button onclick="checkHealth()"><i data-lucide="activity"></i>检测</button>
+  </div>
+</header>
+
+<nav>
+  <button class="active" data-tab="flow"><i data-lucide="layout-dashboard"></i>总览</button>
+  <button data-tab="interview"><i data-lucide="messages-square"></i>对话采访</button>
+  <button data-tab="kb"><i data-lucide="database-zap"></i>知识库整理</button>
+  <button data-tab="outline"><i data-lucide="list-tree"></i>大纲生成</button>
+  <button data-tab="writing"><i data-lucide="pen-line"></i>传记写作</button>
+  <button data-tab="files"><i data-lucide="folder-tree"></i>文件浏览</button>
+</nav>
+
+<main>
+  <div id="panel-flow" class="panel active">
+    <div class="grid">
+      <div class="card">
+        <h3>业务流程</h3>
+        <p class="hint">从采访收集素材，到整理知识库、生成大纲、确认章节，再触发写作和查看结果。</p>
+        <div id="flowSteps">
+          <div class="step" data-step="health"><span class="num">1</span><div><div class="step-title">连接后端</div><div class="step-desc">检查 /health 是否可用</div></div><span class="badge">待检测</span></div>
+          <div class="step" data-step="interview"><span class="num">2</span><div><div class="step-title">采访会话</div><div class="step-desc">启动会话、发送消息、结束并保存素材</div></div><span class="badge">待开始</span></div>
+          <div class="step" data-step="kb"><span class="num">3</span><div><div class="step-title">知识库整理</div><div class="step-desc">运行去重、冲突检测、链接修复等整理任务</div></div><span class="badge">待运行</span></div>
+          <div class="step" data-step="outline"><span class="num">4</span><div><div class="step-title">大纲生成</div><div class="step-desc">扫描材料并生成传记章节大纲</div></div><span class="badge">待生成</span></div>
+          <div class="step" data-step="confirm"><span class="num">5</span><div><div class="step-title">确认章节</div><div class="step-desc">将 draft 章节标记为 confirmed，写作 Agent 才会处理</div></div><span class="badge">待确认</span></div>
+          <div class="step" data-step="writing"><span class="num">6</span><div><div class="step-title">传记写作</div><div class="step-desc">生成章节文件并合并完整传记</div></div><span class="badge">待写作</span></div>
+        </div>
+      </div>
+      <div class="card">
+        <h3>快速操作</h3>
+        <div class="actions">
+          <button class="primary" onclick="checkHealth()"><i data-lucide="plug-zap"></i>检测连接</button>
+          <button onclick="selectTab('interview')"><i data-lucide="message-circle-plus"></i>开始采访</button>
+        </div>
+        <div class="actions">
+          <button onclick="runKBOrganizer()"><i data-lucide="combine"></i>运行整理</button>
+          <button onclick="generateOutline()"><i data-lucide="sparkles"></i>生成大纲</button>
+        </div>
+        <div class="actions">
+          <button onclick="confirmAllDrafts()"><i data-lucide="check-check"></i>确认草稿</button>
+          <button onclick="runWriting()"><i data-lucide="file-pen-line"></i>开始写作</button>
+        </div>
+        <div class="actions">
+          <button onclick="loadFileTree()"><i data-lucide="refresh-cw"></i>刷新文件</button>
+          <button onclick="loadFullBiography()"><i data-lucide="book-open"></i>查看传记</button>
+        </div>
+        <div id="flowLog" class="log" style="margin-top:12px;"></div>
+      </div>
+    </div>
+  </div>
+
+  <div id="panel-interview" class="panel">
+    <div class="card">
+      <div class="row">
+        <h3 style="margin-right:auto;">对话采访 <span id="interviewStatus" class="badge">未开始</span></h3>
+        <button class="primary" id="startBtn" onclick="startInterview()"><i data-lucide="play"></i>启动采访</button>
+        <button class="warn" id="endBtn" onclick="endInterview()" disabled><i data-lucide="square"></i>结束采访</button>
+      </div>
+      <div id="chatBox" class="chat"><div class="msg system">等待启动采访...</div></div>
+      <div class="input-row" id="interviewInputRow">
+        <input id="msgInput" placeholder="输入你的回复..." onkeydown="if(event.key==='Enter')sendMessage()" disabled>
+        <button class="primary" id="sendBtn" onclick="sendMessage()" disabled><i data-lucide="send-horizontal"></i>发送</button>
+      </div>
+      <div class="subcard">
+        <h4>候选问题</h4>
+        <p class="hint">每行一个问题。发送采访消息时会一起传给后端，便于测试 candidate_questions。</p>
+        <textarea id="candidateQuestions">您当年为什么选择参军？
+童年最难忘的一顿饭是什么？
+家里哪位长辈对您影响最大？</textarea>
+      </div>
+    </div>
+  </div>
+
+  <div id="panel-kb" class="panel">
+    <div class="card">
+      <div class="row">
+        <h3 class="spacer">知识库整理</h3>
+        <button class="primary" id="kbRunBtn" onclick="runKBOrganizer()"><i data-lucide="combine"></i>运行整理</button>
+        <span id="kbSpinner" class="spinner"></span>
+      </div>
+      <p class="hint">整理用户知识库，检测重复文档、冲突、断链，并清理旧对话记录。</p>
+      <div id="kbLog" class="log"></div>
+    </div>
+  </div>
+
+  <div id="panel-outline" class="panel">
+    <div class="card">
+      <div class="row">
+        <h3 class="spacer">传记大纲</h3>
+        <button class="primary" id="outlineGenBtn" onclick="generateOutline()"><i data-lucide="sparkles"></i>生成大纲</button>
+        <button onclick="loadOutline()"><i data-lucide="download"></i>加载大纲</button>
+        <button class="success" onclick="confirmAllDrafts()"><i data-lucide="check-check"></i>确认全部草稿</button>
+        <span id="outlineSpinner" class="spinner"></span>
+      </div>
+      <div id="outlineLog" class="log"></div>
+      <div id="outlineChapters" style="margin-top:10px;"></div>
+    </div>
+  </div>
+
+  <div id="panel-writing" class="panel">
+    <div class="card">
+      <div class="row">
+        <h3 class="spacer">传记写作</h3>
+        <button class="primary" id="writingRunBtn" onclick="runWriting()"><i data-lucide="file-pen-line"></i>开始写作</button>
+        <button onclick="loadChapters()"><i data-lucide="files"></i>加载章节</button>
+        <button onclick="loadFullBiography()"><i data-lucide="book-open"></i>查看完整传记</button>
+        <span id="writingSpinner" class="spinner"></span>
+      </div>
+      <div id="writingLog" class="log"></div>
+      <div id="writingChapters" style="margin-top:10px;"></div>
+      <pre id="fullBioContent" class="content" style="display:none;margin-top:10px;"></pre>
+    </div>
+  </div>
+
+  <div id="panel-files" class="panel">
+    <div class="grid">
+      <div class="card">
+        <div class="row">
+          <h3 class="spacer">知识库文件浏览</h3>
+          <button onclick="loadFileTree()"><i data-lucide="refresh-cw"></i>刷新目录树</button>
+        </div>
+        <div id="fileTree" class="file-tree"></div>
+      </div>
+      <div class="card">
+        <h3>文件内容</h3>
+        <div id="fileContent" class="hint">选择左侧文件查看内容。</div>
+      </div>
+    </div>
+  </div>
+</main>
+
+<script>
+const $ = s => document.querySelector(s);
+const $$ = s => Array.from(document.querySelectorAll(s));
+const state = { outline: null, interviewSessionId: null, messageInFlight: false };
+
+const api = () => {
+  const base = $('#apiBase').value.trim();
+  if (base) return base.replace(/\/+$/, '');
+  if (window.location.protocol === 'file:') return 'http://127.0.0.1:8000';
+  if (['127.0.0.1', 'localhost'].includes(window.location.hostname) && window.location.port !== '8000') {
+    return 'http://127.0.0.1:8000';
+  }
+  return '';
+};
+const uid = () => $('#userId').value.trim() || 'test_user001';
+const esc = s => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+function renderIcons() {
+  if (window.lucide) window.lucide.createIcons();
+}
+
+function selectTab(tab) {
+  $$('nav button').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
+  $$('.panel').forEach(p => p.classList.toggle('active', p.id === 'panel-' + tab));
+  if (tab === 'files' && !$('#fileTree').innerHTML.trim()) loadFileTree();
+  if (tab === 'outline' && !$('#outlineChapters').innerHTML.trim()) loadOutline();
+  if (tab === 'writing' && !$('#writingChapters').innerHTML.trim()) loadChapters();
+  renderIcons();
+}
+$$('nav button').forEach(btn => btn.addEventListener('click', () => selectTab(btn.dataset.tab)));
+
+function setStep(step, status, label) {
+  const el = document.querySelector(`.step[data-step="${step}"]`);
+  if (!el) return;
+  el.classList.toggle('done', status === 'done');
+  el.classList.toggle('current', status === 'current');
+  const badge = el.querySelector('.badge');
+  badge.textContent = label;
+  badge.className = 'badge ' + (status === 'done' ? 'ok' : status === 'error' ? 'err' : status === 'current' ? 'warn' : '');
+}
+function logLine(container, cls, text) {
+  const div = document.createElement('div');
+  div.className = 'line ' + cls;
+  div.textContent = text;
+  container.appendChild(div);
+  container.scrollTop = container.scrollHeight;
+}
+function flow(cls, text) { logLine($('#flowLog'), cls, text); }
+function getErrorMessage(data, fallback) {
+  return data?.detail?.error?.message || data?.error?.message || data?.detail?.message || data?.message || data?.detail || fallback;
+}
+async function parseResponseError(res) {
+  const data = await res.json().catch(() => null);
+  return getErrorMessage(data, `${res.status} ${res.statusText}`);
+}
+function encodedPath(path) {
+  return String(path).split('/').map(encodeURIComponent).join('/');
+}
+
+async function checkHealth() {
+  try {
+    const r = await fetch(api() + '/health');
+    if (!r.ok) throw new Error(await parseResponseError(r));
+    $('#healthDot').className = 'dot ok';
+    $('#healthDot').title = '连接正常';
+    setStep('health', 'done', '已连接');
+    flow('success', `后端连接正常：${api() || location.origin}`);
+    return true;
+  } catch (e) {
+    $('#healthDot').className = 'dot';
+    $('#healthDot').title = e.message;
+    setStep('health', 'error', '连接失败');
+    flow('error', '后端连接失败：' + e.message);
+    return false;
+  }
+}
+
+async function* sseStream(url, body) {
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(await parseResponseError(res));
+  if (!res.body) throw new Error('浏览器不支持流式响应');
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let eventName = 'message';
+  let dataLines = [];
+
+  function parseChunk(text) {
+    const out = [];
+    buffer += text;
+    const lines = buffer.split(/\r?\n/);
+    buffer = lines.pop() ?? '';
+    for (const line of lines) {
+      if (line.startsWith(':')) continue;
+      if (line.startsWith('event:')) eventName = line.slice(6).trim();
+      else if (line.startsWith('data:')) dataLines.push(line.slice(5).trimStart());
+      else if (line === '') {
+        if (dataLines.length) {
+          const raw = dataLines.join('\n');
+          try { out.push({ event: eventName, data: JSON.parse(raw) }); }
+          catch { out.push({ event: eventName, data: { raw } }); }
+        }
+        eventName = 'message';
+        dataLines = [];
+      }
+    }
+    return out;
+  }
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    for (const ev of parseChunk(decoder.decode(value, { stream: true }))) yield ev;
+  }
+  for (const ev of parseChunk(decoder.decode())) yield ev;
+  if (buffer || dataLines.length) {
+    const raw = dataLines.join('\n') || buffer;
+    if (raw.trim()) yield { event: eventName, data: JSON.parse(raw) };
+  }
+}
+
+const chatBox = $('#chatBox');
+function addChatMsg(role, text, meta) {
+  const div = document.createElement('div');
+  div.className = 'msg ' + role;
+  div.innerHTML = meta ? `<div class="meta">${esc(meta)}</div>${esc(text)}` : esc(text);
+  chatBox.appendChild(div);
+  chatBox.scrollTop = chatBox.scrollHeight;
+}
+function setInterviewEnabled(enabled) {
+  $('#endBtn').disabled = !enabled || state.messageInFlight;
+  $('#interviewInputRow').style.display = enabled ? 'flex' : 'none';
+  $('#msgInput').disabled = !enabled;
+  $('#sendBtn').disabled = !enabled;
+}
+function getCandidateQuestions() {
+  return $('#candidateQuestions').value.split('\n')
+    .map(x => x.trim())
+    .filter(Boolean)
+    .map((question, i) => ({ id: `debug_q_${i + 1}`, question }));
+}
+async function startInterview() {
+  selectTab('interview');
+  $('#startBtn').disabled = true;
+  setStep('interview', 'current', '启动中');
+  chatBox.innerHTML = '';
+  addChatMsg('system', '正在连接服务器...');
+  try {
+    for await (const ev of sseStream(api() + '/api/interview/start', { user_id: uid() })) {
+      if (ev.event === 'session_started') {
+        state.interviewSessionId = ev.data.session_id;
+        addChatMsg('system', '采访已启动，会话：' + ev.data.session_id);
+        setInterviewEnabled(true);
+        $('#interviewStatus').textContent = '进行中';
+        setStep('interview', 'current', '进行中');
+      } else if (ev.event === 'agent_message') {
+        state.interviewSessionId = ev.data.session_id || state.interviewSessionId;
+        addChatMsg('agent', ev.data.message, '阶段：' + (ev.data.phase || '?'));
+      } else if (ev.event === 'phase_changed') {
+        addChatMsg('system', `阶段切换：${ev.data.from_phase} -> ${ev.data.to_phase}`);
+      } else if (ev.event === 'error' || ev.event === 'failed') {
+        addChatMsg('system', '错误：' + getErrorMessage(ev.data, '未知错误'));
+        setStep('interview', 'error', '失败');
+      } else if (ev.event === 'done') {
+        addChatMsg('system', ev.data.message || '启动流结束');
+      }
+    }
+  } catch (e) {
+    addChatMsg('system', '启动失败：' + e.message);
+    setStep('interview', 'error', '失败');
+  } finally {
+    $('#startBtn').disabled = false;
+    if (state.interviewSessionId) setInterviewEnabled(true);
+  }
+}
+async function sendMessage() {
+  const msg = $('#msgInput').value.trim();
+  if (!msg || !state.interviewSessionId) return;
+  $('#msgInput').value = '';
+  state.messageInFlight = true;
+  $('#sendBtn').disabled = true;
+  $('#endBtn').disabled = true;
+  addChatMsg('user', msg);
+  const currentSessionId = state.interviewSessionId;
+  try {
+    for await (const ev of sseStream(api() + '/api/interview/message', {
+      user_id: uid(),
+      session_id: currentSessionId,
+      message: msg,
+      candidate_questions: getCandidateQuestions(),
+    })) {
+      if (state.interviewSessionId !== currentSessionId) continue;
+      if (ev.event === 'agent_message') {
+        const source = ev.data.question_source ? `，来源：${ev.data.question_source}` : '';
+        addChatMsg('agent', ev.data.message, '阶段：' + (ev.data.phase || '?') + source);
+      } else if (ev.event === 'phase_changed') {
+        addChatMsg('system', `阶段切换：${ev.data.from_phase} -> ${ev.data.to_phase}`);
+      } else if (ev.event === 'error' || ev.event === 'failed') {
+        addChatMsg('system', '错误：' + getErrorMessage(ev.data, '未知错误'));
+      }
+    }
+  } catch (e) {
+    if (state.interviewSessionId === currentSessionId) addChatMsg('system', '发送失败：' + e.message);
+  } finally {
+    state.messageInFlight = false;
+    if (state.interviewSessionId === currentSessionId) {
+      $('#sendBtn').disabled = false;
+      $('#endBtn').disabled = false;
+      $('#msgInput').focus();
+    }
+  }
+}
+async function endInterview() {
+  if (!state.interviewSessionId) return;
+  if (state.messageInFlight) {
+    addChatMsg('system', '请等当前回复完成后再结束采访。');
+    return;
+  }
+  try {
+    const r = await fetch(api() + '/api/interview/end', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ user_id: uid(), session_id: state.interviewSessionId }),
+    });
+    if (!r.ok) throw new Error(await parseResponseError(r));
+    const data = await r.json();
+    const summary = data.summary || data;
+    addChatMsg('system', `采访已结束。总轮数：${summary.total_turns ?? '?'}，阶段：${summary.phase_reached ?? '?'}`);
+    state.interviewSessionId = null;
+    setInterviewEnabled(false);
+    $('#interviewStatus').textContent = '已结束';
+    setStep('interview', 'done', '已结束');
+    await loadFileTree();
+  } catch (e) {
+    addChatMsg('system', '结束失败：' + e.message);
+  }
+}
+
+async function runKBOrganizer() {
+  selectTab('kb');
+  const log = $('#kbLog');
+  log.innerHTML = '';
+  $('#kbRunBtn').disabled = true;
+  $('#kbSpinner').style.display = 'inline-block';
+  setStep('kb', 'current', '运行中');
+  logLine(log, 'info', '启动知识库整理...');
+  try {
+    for await (const ev of sseStream(api() + '/api/kb-organizer/run', { user_id: uid() })) {
+      if (ev.event === 'task_started') logLine(log, 'info', `任务已启动，共 ${ev.data.task_count ?? '?'} 个步骤`);
+      else if (ev.event === 'task_progress') logLine(log, 'progress', `[${ev.data.task_id}] ${ev.data.status}: ${ev.data.description || ''}`);
+      else if (ev.event === 'task_completed') {
+        logLine(log, 'success', `整理完成，迭代 ${ev.data.iteration_count ?? 1} 次`);
+        setStep('kb', 'done', '已完成');
+      } else if (ev.event === 'failed' || ev.event === 'error') {
+        logLine(log, 'error', getErrorMessage(ev.data, '任务失败'));
+        setStep('kb', 'error', '失败');
+      } else if (ev.event === 'done') logLine(log, 'info', ev.data.message || '流结束');
+    }
+    await loadFileTree();
+  } catch (e) {
+    logLine(log, 'error', e.message);
+    setStep('kb', 'error', '失败');
+  } finally {
+    $('#kbRunBtn').disabled = false;
+    $('#kbSpinner').style.display = 'none';
+  }
+}
+
+async function generateOutline() {
+  selectTab('outline');
+  const log = $('#outlineLog');
+  log.innerHTML = '';
+  $('#outlineChapters').innerHTML = '';
+  $('#outlineGenBtn').disabled = true;
+  $('#outlineSpinner').style.display = 'inline-block';
+  setStep('outline', 'current', '生成中');
+  logLine(log, 'info', '启动大纲生成...');
+  try {
+    for await (const ev of sseStream(api() + '/api/biography/outline/generate', { user_id: uid() })) {
+      if (ev.event === 'task_started') logLine(log, 'info', '开始分析知识库...');
+      else if (ev.event === 'scanning') logLine(log, 'info', ev.data.message || '扫描中');
+      else if (ev.event === 'analyzing') logLine(log, 'progress', ev.data.message || '分析中');
+      else if (ev.event === 'generating') logLine(log, 'progress', ev.data.message || '生成中');
+      else if (ev.event === 'completed') {
+        logLine(log, 'success', ev.data.message || '大纲生成完成');
+        setStep('outline', 'done', '已生成');
+        if (ev.data.outline) renderOutline(ev.data.outline);
+      } else if (ev.event === 'failed' || ev.event === 'error') {
+        logLine(log, 'error', getErrorMessage(ev.data, '生成失败'));
+        setStep('outline', 'error', '失败');
+      } else if (ev.event === 'done') logLine(log, 'info', ev.data.message || '流结束');
+    }
+    if (!state.outline) await loadOutline();
+    await loadFileTree();
+  } catch (e) {
+    logLine(log, 'error', e.message);
+    setStep('outline', 'error', '失败');
+  } finally {
+    $('#outlineGenBtn').disabled = false;
+    $('#outlineSpinner').style.display = 'none';
+  }
+}
+async function loadOutline() {
+  try {
+    const r = await fetch(api() + '/api/biography/outline/' + encodeURIComponent(uid()));
+    if (!r.ok) throw new Error(await parseResponseError(r));
+    renderOutline(await r.json());
+    setStep('outline', 'done', '已加载');
+  } catch (e) {
+    $('#outlineLog').innerHTML = `<div class="line error">${esc(e.message)}</div>`;
+  }
+}
+function renderOutline(data) {
+  state.outline = data;
+  const container = $('#outlineChapters');
+  const chapters = data.chapters || [];
+  const draftCount = chapters.filter(ch => ch.status === 'draft').length;
+  const readyCount = chapters.filter(ch => ch.status === 'confirmed' || ch.status === 'written').length;
+  if (readyCount) setStep('confirm', 'done', `已就绪 ${readyCount}`);
+  else if (draftCount) setStep('confirm', 'current', `待确认 ${draftCount}`);
+  container.innerHTML = `<h4>${esc(data.title || '传记大纲')} <span class="badge">${chapters.length} 章</span></h4>`;
+  chapters.forEach(ch => {
+    const div = document.createElement('div');
+    div.className = 'outline-chapter';
+    div.innerHTML = `
+      <span class="chapter-title"><strong>${esc(ch.id)}</strong> ${esc(ch.title || ch.theme || '')}</span>
+      <span class="badge ${ch.status === 'confirmed' || ch.status === 'written' ? 'ok' : 'warn'}">${esc(ch.status || 'draft')}</span>
+    `;
+    const btn = document.createElement('button');
+    const icon = ch.status === 'draft' ? 'check' : ch.status === 'written' ? 'badge-check' : 'check-circle-2';
+    const label = ch.status === 'draft' ? '确认' : ch.status === 'written' ? '已写作' : '已确认';
+    btn.innerHTML = `<i data-lucide="${icon}"></i>${label}`;
+    btn.className = ch.status === 'draft' ? 'success' : '';
+    btn.disabled = ch.status !== 'draft';
+    btn.onclick = () => confirmChapter(ch.id);
+    div.appendChild(btn);
+    container.appendChild(div);
+  });
+  renderIcons();
+}
+async function confirmChapter(chapterId) {
+  const r = await fetch(api() + `/api/biography/outline/${encodeURIComponent(uid())}/chapters/${encodeURIComponent(chapterId)}/confirm`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ notes: 'debug_frontend confirmed' }),
+  });
+  if (!r.ok) throw new Error(await parseResponseError(r));
+  await loadOutline();
+}
+async function confirmAllDrafts() {
+  selectTab('outline');
+  if (!state.outline) await loadOutline();
+  const drafts = (state.outline?.chapters || []).filter(ch => ch.status === 'draft');
+  if (!drafts.length) {
+    logLine($('#outlineLog'), 'info', '没有需要确认的 draft 章节。');
+    setStep('confirm', 'done', '无需确认');
+    return;
+  }
+  setStep('confirm', 'current', '确认中');
+  for (const ch of drafts) {
+    try {
+      await confirmChapter(ch.id);
+      logLine($('#outlineLog'), 'success', `已确认 ${ch.id}`);
+    } catch (e) {
+      logLine($('#outlineLog'), 'error', `${ch.id} 确认失败：${e.message}`);
+      setStep('confirm', 'error', '失败');
+      return;
+    }
+  }
+  setStep('confirm', 'done', `已确认 ${drafts.length}`);
+}
+
+async function runWriting() {
+  selectTab('writing');
+  const log = $('#writingLog');
+  log.innerHTML = '';
+  $('#writingChapters').innerHTML = '';
+  $('#fullBioContent').style.display = 'none';
+  $('#writingRunBtn').disabled = true;
+  $('#writingSpinner').style.display = 'inline-block';
+  setStep('writing', 'current', '写作中');
+  logLine(log, 'info', '启动传记写作...');
+  try {
+    for await (const ev of sseStream(api() + '/api/biography/writing/run', { user_id: uid() })) {
+      if (ev.event === 'task_started') logLine(log, 'info', `待写章节：${ev.data.chapters_to_write ?? '?'}`);
+      else if (ev.event === 'loading_tasks') logLine(log, 'info', `加载任务：${(ev.data.chapters || []).join(', ')}`);
+      else if (ev.event === 'saved') logLine(log, 'progress', `已保存 ${ev.data.chapter_id} (${ev.data.progress})`);
+      else if (ev.event === 'merging') logLine(log, 'info', ev.data.message || '合并中');
+      else if (ev.event === 'completed') {
+        logLine(log, 'success', ev.data.message || `写作完成，共 ${ev.data.total_word_count ?? 0} 字`);
+        setStep('writing', 'done', '已完成');
+      } else if (ev.event === 'failed' || ev.event === 'error') {
+        logLine(log, 'error', getErrorMessage(ev.data, '写作失败'));
+        setStep('writing', 'error', '失败');
+      } else if (ev.event === 'done') logLine(log, 'info', ev.data.message || '流结束');
+    }
+    await loadChapters();
+    await loadFullBiography(false);
+    await loadFileTree();
+  } catch (e) {
+    logLine(log, 'error', e.message);
+    setStep('writing', 'error', '失败');
+  } finally {
+    $('#writingRunBtn').disabled = false;
+    $('#writingSpinner').style.display = 'none';
+  }
+}
+async function loadChapters() {
+  try {
+    const r = await fetch(api() + '/api/biography/writing/' + encodeURIComponent(uid()) + '/chapters');
+    if (!r.ok) throw new Error(await parseResponseError(r));
+    const data = await r.json();
+    const container = $('#writingChapters');
+    container.innerHTML = `<h4>已写章节 <span class="badge">${(data.chapters || []).length} 章</span> <span class="badge">${data.total_word_count || 0} 字节</span></h4>`;
+    (data.chapters || []).forEach(ch => {
+      const div = document.createElement('div');
+      div.className = 'outline-chapter';
+      div.innerHTML = `<span class="chapter-title"><strong>${esc(ch.chapter_id)}</strong> ${esc(ch.title)}</span><span class="badge ok">${ch.word_count} 字节</span>`;
+      const btn = document.createElement('button');
+      btn.innerHTML = '<i data-lucide="eye"></i>查看';
+      btn.onclick = () => { selectTab('files'); loadFileContent(ch.file_path); };
+      div.appendChild(btn);
+      container.appendChild(div);
+    });
+    renderIcons();
+  } catch (e) {
+    $('#writingLog').innerHTML = `<div class="line error">${esc(e.message)}</div>`;
+  }
+}
+async function loadFullBiography(switchTab = true) {
+  if (switchTab) selectTab('writing');
+  try {
+    const r = await fetch(api() + '/api/biography/writing/' + encodeURIComponent(uid()) + '/full');
+    if (!r.ok) throw new Error(await parseResponseError(r));
+    const data = await r.json();
+    const pre = $('#fullBioContent');
+    pre.style.display = 'block';
+    pre.textContent = data.content || '(空)';
+    setStep('writing', 'done', '有成稿');
+  } catch (e) {
+    logLine($('#writingLog'), 'error', e.message);
+  }
+}
+
+async function loadFileTree() {
+  try {
+    const r = await fetch(api() + '/api/files/' + encodeURIComponent(uid()) + '/tree');
+    if (!r.ok) throw new Error(await parseResponseError(r));
+    const data = await r.json();
+    renderFileTree(data.tree);
+  } catch (e) {
+    $('#fileTree').innerHTML = `<div class="line error">${esc(e.message)}</div>`;
+  }
+}
+function renderFileTree(node) {
+  const container = $('#fileTree');
+  container.innerHTML = '';
+  walkTree(node, container);
+}
+function walkTree(node, parent) {
+  if (node.type === 'directory') {
+    const div = document.createElement('div');
+    div.className = 'dir';
+    div.textContent = '▾ ' + node.name + '/';
+    parent.appendChild(div);
+    const children = document.createElement('div');
+    children.className = 'children';
+    (node.children || []).forEach(c => walkTree(c, children));
+    div.onclick = e => {
+      e.stopPropagation();
+      const hidden = children.style.display === 'none';
+      children.style.display = hidden ? 'block' : 'none';
+      div.textContent = (hidden ? '▾ ' : '▸ ') + node.name + '/';
+    };
+    parent.appendChild(children);
+    return;
+  }
+  const div = document.createElement('div');
+  div.className = 'file';
+  div.textContent = node.name;
+  div.title = node.path;
+  div.onclick = e => {
+    e.stopPropagation();
+    loadFileContent(node.path);
+  };
+  parent.appendChild(div);
+}
+async function loadFileContent(path) {
+  try {
+    const r = await fetch(api() + '/api/files/' + encodeURIComponent(uid()) + '/' + encodedPath(path));
+    if (!r.ok) throw new Error(await parseResponseError(r));
+    const data = await r.json();
+    $('#fileContent').innerHTML = `<h4>${esc(data.filename)} <span class="badge">${data.size} 字节</span></h4><pre class="content">${esc(data.content || '')}</pre>`;
+  } catch (e) {
+    $('#fileContent').innerHTML = `<div class="line error">${esc(e.message)}</div>`;
+  }
+}
+
+$('#apiBase').value = localStorage.getItem('debug_api_base') || '';
+$('#userId').value = localStorage.getItem('debug_user_id') || $('#userId').value;
+$('#apiBase').addEventListener('change', () => localStorage.setItem('debug_api_base', $('#apiBase').value));
+$('#userId').addEventListener('change', () => {
+  localStorage.setItem('debug_user_id', $('#userId').value);
+  state.outline = null;
+  state.interviewSessionId = null;
+  $('#outlineChapters').innerHTML = '';
+  $('#writingChapters').innerHTML = '';
+  $('#fileTree').innerHTML = '';
+});
+checkHealth();
+window.addEventListener('load', renderIcons);
+</script>
+</body>
+</html>

@@ -268,6 +268,12 @@ class MemoryManager:
         """将 PersonExtract 转换为 PersonInfo"""
         # 转换关系
         relationships = {rel.related_person_id: rel.relationship for rel in person.relationships}
+        if isinstance(person.personality, list):
+            characteristics = [str(item) for item in person.personality if item]
+        elif person.personality:
+            characteristics = [str(person.personality)]
+        else:
+            characteristics = []
         
         return PersonInfo(
             person_id=person.person_id,
@@ -277,7 +283,7 @@ class MemoryManager:
             relation_to_protagonist=person.relation,
             source_events=[],  # PersonExtract没有source_events字段
             birth_year=person.first_appear_time or "",
-            characteristics=[person.personality] if person.personality else [],
+            characteristics=characteristics,
             influence=person.influence_level.value if isinstance(person.influence_level, Importance) else person.influence_level,
             quotes=person.key_quotes,
         )

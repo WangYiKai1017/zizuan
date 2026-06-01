@@ -5,7 +5,7 @@ from pathlib import Path
 from src.service.agent_runners.base_runner import BaseAgentRunner
 from src.service.sse_response import SSEEmitter
 from src.agents.biography_writing_agent import BiographyWritingAgent
-from src.config.llm_config import LLMConfig
+from src.config.llm_config import get_default_config
 from src.services.llm_service import LLMService
 from src.services.biography_file_manager import BiographyFileManager
 from src.services.biography_material_analyzer import BiographyMaterialAnalyzer
@@ -21,7 +21,7 @@ class WritingRunner(BaseAgentRunner):
 
     def _create_agent(self, kb_path: str):
         """Create a fully-wired BiographyWritingAgent."""
-        config = LLMConfig.from_env()
+        config = get_default_config()
         llm_service = LLMService(config)
         file_manager = BiographyFileManager(kb_path)
         material_analyzer = BiographyMaterialAnalyzer(file_manager)

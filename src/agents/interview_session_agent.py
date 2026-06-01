@@ -235,7 +235,8 @@ class InterviewSessionAgent:
             query_tool=self.query_tool,
             archive_tool=self.archive_tool,
             duration_minutes=15,  # 老用户完整15分钟
-            resume_prompt=resume_prompt
+            resume_prompt=resume_prompt,
+            initial_history=history,
         )
         
         self.phase = SessionPhase.INTERVIEW
@@ -327,12 +328,12 @@ class InterviewSessionAgent:
             profile_info=self.profile_agent.collected_info
         )
 
-        # # 2.1 将当前内容归档
-        # await self.archive_tool.archive_conversation(
-        #     user_id=self.user_id,
-        #     conversation_history=profile_history,
-        #     session_summary="用户初始化对话存档"
-        # )
+        # 2.1 将当前内容归档
+        await self.archive_tool.archive_conversation(
+            user_id=self.user_id,
+            conversation_history=profile_history,
+            session_summary="用户初始化对话存档"
+        )
         
         # 3. 标记已初始化
         self.has_profile = True
@@ -360,16 +361,6 @@ class InterviewSessionAgent:
         # 检查时间限制
         elapsed = self._get_elapsed_minutes()
 
-        # 检查是否达到前五分钟，触发归档
-        if not self.five_minute_archived and elapsed >= 5:
-            logger.info(f"达到前五分钟，触发归档，已用时间：{elapsed:.1f}分钟")
-            await self.archive_tool.archive_conversation(
-                user_id=self.user_id,
-                conversation_history=self.conversation_history,
-                session_summary="前五分钟对话存档"
-            )
-            self.five_minute_archived = True
-
         if elapsed >= self.total_duration_minutes:
             # 超时，进入结束流程
             ending_msg = await self._start_ending()
@@ -384,6 +375,17 @@ class InterviewSessionAgent:
             user_input,
             candidate_questions=candidate_questions,
         )
+        self.conversation_history = list(self.interview_agent.conversation_history)
+
+        # 检查是否达到前五分钟，触发归档。放在本轮处理之后，确保归档包含触发 checkpoint 的采访内容。
+        if not self.five_minute_archived and elapsed >= 5:
+            logger.info(f"达到前五分钟，触发归档，已用时间：{elapsed:.1f}分钟")
+            await self.archive_tool.archive_conversation(
+                user_id=self.user_id,
+                conversation_history=self.conversation_history,
+                session_summary="前五分钟对话存档"
+            )
+            self.five_minute_archived = True
 
         # 检查InterviewAgent是否主动结束
         if self.interview_agent.is_completed:
