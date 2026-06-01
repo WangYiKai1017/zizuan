@@ -86,6 +86,17 @@ class InterviewRunner:
         session_manager = SessionManager.get_instance()
         agent = await session_manager.get_interview_agent(self.user_id)
 
+        ending_message = ""
+        archived = False
+        if agent is not None:
+            ending_message = await agent.end_session()
+            archived = True
+            phase_reached = agent.phase.value if hasattr(agent.phase, 'value') else str(agent.phase)
+            total_turns = len(getattr(agent, 'conversation_history', []) or [])
+        else:
+            phase_reached = "unknown"
+            total_turns = 0
+
         # Release session
         await session_manager.release(self.user_id, self.session_id)
 
@@ -94,8 +105,10 @@ class InterviewRunner:
             "status": "ended",
             "session_id": self.session_id,
             "summary": {
-                "total_turns": getattr(agent, 'turn_count', 0) if agent else 0,
-                "phase_reached": (agent.phase.value if agent and hasattr(agent.phase, 'value') else "unknown"),
-            }
+                "total_turns": total_turns,
+                "phase_reached": phase_reached,
+                "archived": archived,
+            },
+            "ending_message": ending_message,
         }
         return summary

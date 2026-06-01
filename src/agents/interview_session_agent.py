@@ -405,6 +405,45 @@ class InterviewSessionAgent:
             source="generated",
             candidate_question_id=None,
         )
+
+    async def end_session(self) -> str:
+        """
+        主动结束会话并归档当前已收集的内容。
+
+        用于 /api/interview/end，确保前端手动结束时也会触发 Markdown 构建。
+        """
+        if self.phase == SessionPhase.CLOSED:
+            return "今天的采访已经结束，期待下次再聊。"
+
+        if self.interview_agent:
+            self.conversation_history = list(self.interview_agent.conversation_history)
+            return await self._start_ending()
+
+        if self.profile_agent:
+            profile_history = self.profile_agent.get_conversation_history()
+            self.conversation_history = list(profile_history)
+            await self.archive_tool.create_user_knowledge_base(
+                user_id=self.user_id,
+                conversation_history=profile_history,
+                profile_info=self.profile_agent.collected_info
+            )
+            await self.archive_tool.archive_conversation(
+                user_id=self.user_id,
+                conversation_history=profile_history,
+                session_summary="用户初始化对话结束归档"
+            )
+            self.phase = SessionPhase.CLOSED
+            return "今天的采访就到这里啦，非常感谢您的分享。期待下次再聊！"
+
+        if self.conversation_history:
+            await self.archive_tool.archive_conversation(
+                user_id=self.user_id,
+                conversation_history=self.conversation_history,
+                session_summary="采访结束归档"
+            )
+
+        self.phase = SessionPhase.CLOSED
+        return "今天的采访就到这里啦，非常感谢您的分享。期待下次再聊！"
     
     async def _start_ending(self) -> str:
         """
@@ -420,6 +459,7 @@ class InterviewSessionAgent:
         
         # 使用InterviewAgent的结束流程
         ending_message = await self.interview_agent.generate_ending()
+        self.conversation_history = list(self.interview_agent.conversation_history)
         
         # 归档对话记录
         await self.archive_tool.archive_conversation(

@@ -87,6 +87,11 @@ async def end_interview(request: InterviewEndRequest):
             "error": {"code": "SESSION_NOT_FOUND", "message": "会话不存在", "details": None}
         })
 
+    if session.session_id != request.session_id:
+        raise HTTPException(status_code=404, detail={
+            "error": {"code": "SESSION_NOT_FOUND", "message": "会话ID不匹配", "details": None}
+        })
+
     emitter = SSEEmitter()  # Not used for streaming here, but needed by runner constructor
     runner = InterviewRunner(user_id=request.user_id, session_id=request.session_id, emitter=emitter)
 
