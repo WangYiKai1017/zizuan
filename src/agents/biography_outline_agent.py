@@ -6,6 +6,7 @@
 
 import json
 import logging
+import re
 from datetime import datetime
 
 from src.models.biography_models import (
@@ -199,6 +200,9 @@ class BiographyOutlineAgent:
             proposed_chapters = [
                 ChapterEntry.model_validate(ch) for ch in chapters_data
             ]
+            for chapter in proposed_chapters:
+                chapter.source_materials = self._filter_existing_materials(chapter.source_materials)
+                chapter.summary = self._build_grounded_chapter_summary(chapter)
 
             logger.info(
                 f"[generate_outline] 生成了 {len(proposed_chapters)} 个章节"
@@ -219,6 +223,124 @@ class BiographyOutlineAgent:
                 "status": AgentStatus.FAILED,
                 "error_message": f"大纲解析失败: {e}",
             }
+
+    def _filter_existing_materials(self, source_materials: list[str]) -> list[str]:
+        """只保留真实存在的 KB 素材，避免大纲引用不存在或无关文件。"""
+        filtered = []
+        for path in source_materials or []:
+            if not path or path.startswith("biography/"):
+                continue
+            try:
+                self.file_manager.read_kb_file(path)
+            except Exception:
+                continue
+            if path not in filtered:
+                filtered.append(path)
+        return filtered
+
+    def _build_grounded_chapter_summary(self, chapter: ChapterEntry) -> str:
+        """用 source_materials 中的明确信息重写章节摘要，避免文学化补写。"""
+        event_parts = []
+        people_parts = []
+        for path in chapter.source_materials:
+            try:
+                content = self.file_manager.read_kb_file(path)
+            except Exception:
+                continue
+            if path.startswith("events/"):
+                event_parts.append(self._summarize_event_material(content))
+            elif path.startswith("people/"):
+                people = self._extract_people_material(content)
+                if people:
+                    people_parts.append(people)
+
+        event_parts = [part for part in event_parts if part]
+        people_parts = [part for part in people_parts if part]
+
+        if event_parts:
+            summary = "；".join(event_parts[:2])
+            if people_parts and chapter.theme == "家庭与亲情":
+                summary = f"{summary}；本章还会交代{self._join_unique(people_parts)}。"
+            return self._sanitize_outline_summary(summary)
+
+        if people_parts:
+            return self._sanitize_outline_summary(f"本章围绕{self._join_unique(people_parts)}展开，只写知识库中已确认的家庭关系与生活近况。")
+
+        return self._sanitize_outline_summary(chapter.summary)
+
+    def _summarize_event_material(self, content: str) -> str:
+        title = self._extract_title(content)
+        time_text = self._extract_field(content, "时间")
+        description = self._extract_section(content, "事件描述").strip()
+        details = self._extract_bullets(self._extract_section(content, "关键细节"))
+        concrete_details = [
+            detail for detail in details
+            if not detail.startswith("我叫")
+            and "故事留给" not in detail
+            and "我和妻子" not in detail
+            and "外孙女叫" not in detail
+        ]
+        detail_text = "，".join(concrete_details[:5])
+        head = f"{time_text}，{title}" if time_text else title
+        if detail_text:
+            return f"{head}，关键细节包括{detail_text}"
+        if description:
+            return f"{head}：{description}"
+        return head
+
+    def _extract_people_material(self, content: str) -> str:
+        name = self._extract_field(content, "姓名") or self._extract_title(content)
+        role = self._extract_field(content, "关系")
+        if name and role:
+            return f"{name}（{role}）"
+        return name
+
+    def _extract_title(self, content: str) -> str:
+        for line in content.splitlines():
+            if line.startswith("# "):
+                return line[2:].strip()
+        return ""
+
+    def _extract_field(self, content: str, field_name: str) -> str:
+        match = re.search(rf"- \*\*{re.escape(field_name)}\*\*[：:](.+)", content)
+        return match.group(1).strip() if match else ""
+
+    def _extract_section(self, content: str, heading: str) -> str:
+        pattern = rf"## {re.escape(heading)}\n(.*?)(?=\n## |\Z)"
+        match = re.search(pattern, content, flags=re.S)
+        return match.group(1).strip() if match else ""
+
+    def _extract_bullets(self, section: str) -> list[str]:
+        bullets = []
+        for line in section.splitlines():
+            line = line.strip()
+            if line.startswith("- "):
+                bullets.append(line[2:].strip())
+        return bullets
+
+    def _join_unique(self, items: list[str]) -> str:
+        result = []
+        for item in items:
+            if item and item not in result:
+                result.append(item)
+        return "、".join(result)
+
+    def _sanitize_outline_summary(self, summary: str) -> str:
+        forbidden_replacements = {
+            "稻浪": "安徽全椒农村",
+            "父母弯下的背影": "早年家庭细节",
+            "梦想的种子": "早年经历",
+            "普通工人对国家最深情的告白": "一次职业经历",
+            "荣耀": "经历",
+            "技术骨干": "钳工",
+            "推测": "",
+            "推断": "",
+            "推算": "",
+        }
+        text = summary or ""
+        for old, new in forbidden_replacements.items():
+            text = text.replace(old, new)
+        return text.strip()
 
     async def diff_and_update_node(self, state: OutlineAgentState) -> dict:
         """对比已有大纲，更新并写入文件

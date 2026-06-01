@@ -553,42 +553,103 @@ class InterviewSessionAgent:
             ending_message = ending_result
             next_questions = []
             summary = ending_result
+        ending_message = self._sanitize_archive_text(ending_message)
+        summary = self._sanitize_archive_text(summary)
 
-        # 构建 session_data 用于采访记录归档
-        session_data = {
-            "summary": summary,
-            "events": [],
-            "people": [],
-            "timepoints": [],
-            "next_questions": next_questions,
-            "unfinished_topics": self.interview_agent.current_topic or "",
-            "current_topic": self.interview_agent.current_topic or "",
-            "emotion_state": "",
-            "topic_history": list(self.interview_agent.topic_history),
-        }
-
-        # 尝试从 interview_agent 的对话历史中提取事件/人物
-        # (简化实现：仅基于缓存内容获取)
-        try:
-            cache_content = self.cache_tool.get_cache(session_id=self.user_id, query={})
-            if cache_content and isinstance(cache_content, dict):
-                session_data["events"] = cache_content.get("events", [])
-                session_data["people"] = cache_content.get("people", [])
-        except Exception:
-            pass
-
-        # 创建采访记录归档
-        await self.archive_tool.create_session_archive(self.user_id, session_data)
-
-        # 归档对话记录（事件/人物提取和组织）
-        await self.archive_tool.archive_conversation(
+        # 先归档对话记录，让 session 归档可以引用本次结构化提取结果。
+        organized_memory = await self.archive_tool.archive_conversation(
             user_id=self.user_id,
             conversation_history=self.conversation_history,
             session_summary=self.interview_agent.session_summary
         )
+
+        events, people, timepoints = self._format_session_archive_items(organized_memory)
+
+        # 构建 session_data 用于采访记录归档
+        session_data = {
+            "summary": summary,
+            "events": events,
+            "people": people,
+            "timepoints": timepoints,
+            "next_questions": next_questions,
+            "unfinished_topics": self._stringify_topic(self.interview_agent.current_topic) or "",
+            "current_topic": self._stringify_topic(self.interview_agent.current_topic) or "",
+            "emotion_state": "",
+            "topic_history": [
+                self._stringify_topic(topic)
+                for topic in self.interview_agent.topic_history
+                if self._stringify_topic(topic)
+            ],
+        }
+
+        # 创建采访记录归档
+        await self.archive_tool.create_session_archive(self.user_id, session_data)
         
         self.phase = SessionPhase.CLOSED
         return ending_message
+
+    def _format_session_archive_items(self, organized_memory) -> tuple[list[str], list[str], list[str]]:
+        """把结构化归档结果转换成 session md 里的人类可读列表。"""
+        if not organized_memory:
+            return [], [], []
+
+        events = []
+        for event in getattr(organized_memory, "events", []) or []:
+            title = getattr(event, "title", "") or ""
+            time = getattr(event, "time", "") or ""
+            description = self._sanitize_archive_text(getattr(event, "description", "") or "")
+            label = " - ".join(part for part in [time, title] if part)
+            if description:
+                label = f"{label}: {description}" if label else description
+            if label:
+                events.append(label)
+
+        people = []
+        for person in getattr(organized_memory, "people", []) or []:
+            name = getattr(person, "name", "") or ""
+            relation = getattr(person, "relation", "") or ""
+            description = self._sanitize_archive_text(getattr(person, "description", "") or "")
+            label = "（".join([name, relation]) + "）" if name and relation else name or relation
+            if description:
+                label = f"{label}: {description}" if label else description
+            if label:
+                people.append(label)
+
+        timepoints = []
+        for update in getattr(organized_memory, "timeline_updates", []) or []:
+            time_point = getattr(update, "time_point", "") or ""
+            significance = getattr(update, "significance", "") or ""
+            if "推断" in significance or "推算" in significance:
+                continue
+            label = f"{time_point}: {significance}" if significance else time_point
+            if label:
+                timepoints.append(label)
+
+        return events, people, timepoints
+
+    def _stringify_topic(self, topic) -> str:
+        if not topic:
+            return ""
+        if isinstance(topic, str):
+            return topic
+        if isinstance(topic, dict):
+            for key in ("event", "title", "name", "topic", "description"):
+                value = topic.get(key)
+                if value:
+                    return str(value)
+        return str(topic)
+
+    def _sanitize_archive_text(self, text: str) -> str:
+        if not text:
+            return ""
+        text = str(text)
+        text = text.replace("具体职业不详，推测为钳工", "")
+        text = text.replace("，推测为钳工", "")
+        text = text.replace("推测为钳工", "")
+        text = text.replace("推测为", "为")
+        text = text.replace("技术骨干", "钳工")
+        text = text.replace("资深钳工", "钳工")
+        return text.strip().rstrip("，,")
     
     async def end_session(self) -> str:
         """

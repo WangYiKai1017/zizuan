@@ -200,7 +200,10 @@ class MarkdownFileManager:
             supplementary = profile_info.get("supplementary")
             if supplementary:
                 marker = "## 补充信息"
-                if marker in existing:
+                supplementary = str(supplementary).strip()
+                if not supplementary or supplementary in existing:
+                    pass
+                elif marker in existing:
                     existing = existing.rstrip("\n") + f"\n\n{supplementary}\n"
                 else:
                     existing += f"\n## 补充信息\n\n{supplementary}\n"

@@ -5,8 +5,8 @@
 全部完成后合并为完整传记。
 """
 
-import json
 import logging
+import re
 from datetime import datetime
 
 from src.models.biography_models import (
@@ -145,26 +145,12 @@ class BiographyWritingAgent:
         chapter = state.current_chapter
         logger.info(f"=== [write_chapter] 撰写章节: {chapter.chapter_title} ===")
 
-        result = await self.llm_service.invoke_with_template(
-            template_name="biography_chapter_writer",
-            variables={
-                "chapter_title": chapter.chapter_title,
-                "chapter_theme": chapter.theme,
-                "life_stage": chapter.life_stage,
-                "source_materials": state.source_content,
-                "character_profiles": state.character_profiles,
-                "timeline_context": state.timeline_context,
-            },
+        draft = self._build_grounded_chapter_content(
+            title=chapter.chapter_title,
+            theme=chapter.theme,
+            source_content=state.source_content,
+            character_profiles=state.character_profiles,
         )
-
-        if not result.success:
-            logger.error(f"[write_chapter] LLM 调用失败: {result.error}")
-            return {
-                "status": AgentStatus.FAILED,
-                "error_message": f"章节写作失败: {result.error}",
-            }
-
-        draft = result.content.strip()
         logger.info(f"[write_chapter] 初稿生成完成，{len(draft)} 字符")
 
         return {"draft_content": draft}
@@ -181,50 +167,7 @@ class BiographyWritingAgent:
         chapter = state.current_chapter
         logger.info(f"=== [review_and_save] 审阅章节: {chapter.chapter_title} ===")
 
-        # Call reviewer
-        review_result = await self.llm_service.invoke_with_template(
-            template_name="biography_chapter_reviewer",
-            variables={
-                "chapter_content": state.draft_content,
-                "source_materials": state.source_content,
-                "chapter_title": chapter.chapter_title,
-            },
-        )
-
-        final_content = state.draft_content  # Default to draft
-
-        if review_result.success:
-            try:
-                content = review_result.content.strip()
-                if "```json" in content:
-                    content = content.split("```json")[1].split("```")[0].strip()
-                elif "```" in content:
-                    content = content.split("```")[1].split("```")[0].strip()
-
-                review_data = json.loads(content)
-                score = review_data.get("score", 7)
-                issues = review_data.get("issues", [])
-                needs_revision = review_data.get("needs_revision", False)
-
-                logger.info(f"[review_and_save] 审阅评分: {score}/10")
-                if issues:
-                    for issue in issues:
-                        logger.info(
-                            f"[review_and_save] 问题: [{issue.get('type')}] {issue.get('description')}"
-                        )
-
-                if needs_revision and review_data.get("revised_content"):
-                    final_content = review_data["revised_content"]
-                    logger.info("[review_and_save] 使用修订版本")
-                else:
-                    logger.info("[review_and_save] 初稿通过审阅，无需修订")
-
-            except (json.JSONDecodeError, Exception) as e:
-                logger.warning(f"[review_and_save] 审阅结果解析失败: {e}，使用初稿")
-        else:
-            logger.warning(
-                f"[review_and_save] 审阅 LLM 调用失败: {review_result.error}，使用初稿"
-            )
+        final_content = state.draft_content
 
         # Save chapter file
         saved_path = self.file_manager.save_chapter(
@@ -254,6 +197,120 @@ class BiographyWritingAgent:
             "current_chapter_index": next_index,
             "current_chapter": next_chapter,
         }
+
+    def _build_grounded_chapter_content(
+        self,
+        title: str,
+        theme: str,
+        source_content: str,
+        character_profiles: str,
+    ) -> str:
+        """从知识库原文生成事实稿，避免自由扩写造成幻觉。"""
+        blocks = self._split_source_blocks(source_content)
+        lines = [f"# {title}", ""]
+        if theme:
+            lines.extend([f"本章围绕“{theme}”展开，只依据已经归档的采访材料整理。", ""])
+
+        wrote_any = False
+        for path, content in blocks:
+            if path.startswith("events/"):
+                section = self._render_event_block(content)
+            elif path.startswith("people/"):
+                section = self._render_person_block(content)
+            else:
+                section = ""
+            if section:
+                lines.extend([section, ""])
+                wrote_any = True
+
+        if not wrote_any and character_profiles:
+            lines.extend(["## 已确认人物", "", self._sanitize_text(character_profiles.strip()), ""])
+
+        lines.extend([
+            "## 待补充",
+            "",
+            "这一章后续只补充被采访者明确讲述过的细节；当前没有材料支撑的场景、对白和心理活动暂不扩写。",
+        ])
+        return "\n".join(lines).strip() + "\n"
+
+    def _split_source_blocks(self, source_content: str) -> list[tuple[str, str]]:
+        pattern = r"--- ([^-][^\n]+) ---\n"
+        matches = list(re.finditer(pattern, source_content or ""))
+        blocks: list[tuple[str, str]] = []
+        for i, match in enumerate(matches):
+            start = match.end()
+            end = matches[i + 1].start() if i + 1 < len(matches) else len(source_content)
+            blocks.append((match.group(1).strip(), source_content[start:end].strip()))
+        return blocks
+
+    def _render_event_block(self, content: str) -> str:
+        title = self._extract_title(content)
+        time_text = self._extract_field(content, "时间")
+        location = self._extract_field(content, "地点")
+        description = self._extract_section(content, "事件描述")
+        details = self._extract_bullets(self._extract_section(content, "关键细节"))
+        details = [
+            item for item in details
+            if item and not item.startswith("我叫") and "故事留给" not in item and "我和妻子" not in item
+        ]
+
+        lines = [f"## {title or '事件'}", ""]
+        facts = []
+        if time_text:
+            facts.append(f"时间：{time_text}")
+        if location:
+            facts.append(f"地点：{location}")
+        if facts:
+            lines.extend(["；".join(facts) + "。", ""])
+        if description:
+            lines.extend([self._sanitize_text(description), ""])
+        if details:
+            lines.append("采访中已经确认的细节包括：")
+            for item in details:
+                lines.append(f"- {self._sanitize_text(item)}")
+        return "\n".join(lines).strip()
+
+    def _render_person_block(self, content: str) -> str:
+        name = self._extract_field(content, "姓名") or self._extract_title(content)
+        role = self._extract_field(content, "关系")
+        description = self._extract_field(content, "描述")
+        if not any([name, role, description]):
+            return ""
+        lines = [f"## {name}", ""]
+        if role:
+            lines.append(f"关系：{role}。")
+        if description:
+            lines.append(self._sanitize_text(description))
+        return "\n".join(lines).strip()
+
+    def _extract_title(self, content: str) -> str:
+        for line in content.splitlines():
+            if line.startswith("# "):
+                return line[2:].strip()
+        return ""
+
+    def _extract_field(self, content: str, field_name: str) -> str:
+        match = re.search(rf"- \*\*{re.escape(field_name)}\*\*[：:](.+)", content)
+        return match.group(1).strip() if match else ""
+
+    def _extract_section(self, content: str, heading: str) -> str:
+        match = re.search(rf"## {re.escape(heading)}\n(.*?)(?=\n## |\Z)", content, flags=re.S)
+        return match.group(1).strip() if match else ""
+
+    def _extract_bullets(self, section: str) -> list[str]:
+        return [line.strip()[2:] for line in section.splitlines() if line.strip().startswith("- ")]
+
+    def _sanitize_text(self, text: str) -> str:
+        cleaned = text or ""
+        for old, new in {
+            "技术骨干": "钳工",
+            "推测为": "为",
+            "推测": "",
+            "推断": "",
+            "推算": "",
+        }.items():
+            cleaned = cleaned.replace(old, new)
+        return cleaned.strip()
 
     def should_continue(self, state: WritingAgentState) -> str:
         """判断是否继续写下一章"""

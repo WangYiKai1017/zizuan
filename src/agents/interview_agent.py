@@ -139,7 +139,7 @@ class InterviewAgent:
         elif detected_topic and detected_topic != self.current_topic:
             # Topic changed naturally
             if self.current_topic:
-                self.topic_history.append(self.current_topic)
+                self.topic_history.append(self._stringify_topic(self.current_topic))
             self.current_topic = detected_topic
             self.topic_turn_count = 1
         else:
@@ -194,8 +194,8 @@ class InterviewAgent:
         # 如果LLM决定换话题，更新追踪状态
         if result.topic_switched and result.new_topic:
             if self.current_topic:
-                self.topic_history.append(self.current_topic)
-            self.current_topic = result.new_topic
+                self.topic_history.append(self._stringify_topic(self.current_topic))
+            self.current_topic = self._stringify_topic(result.new_topic)
             self.topic_turn_count = 1
 
         # 记录助手回复（纯文本）
@@ -272,21 +272,34 @@ class InterviewAgent:
         # Priority: events > persons > locations > time_points
         events = key_info.get("events", [])
         if events:
-            return events[0] if isinstance(events[0], str) else str(events[0])
+            return self._stringify_topic(events[0])
         
         persons = key_info.get("persons", [])
         if persons:
-            return persons[0] if isinstance(persons[0], str) else str(persons[0])
+            return self._stringify_topic(persons[0])
         
         locations = key_info.get("locations", [])
         if locations:
-            return locations[0] if isinstance(locations[0], str) else str(locations[0])
+            return self._stringify_topic(locations[0])
         
         time_points = key_info.get("time_points", [])
         if time_points:
-            return time_points[0] if isinstance(time_points[0], str) else str(time_points[0])
+            return self._stringify_topic(time_points[0])
         
         return None
+
+    def _stringify_topic(self, topic) -> str:
+        """Normalize model-provided topic objects into a readable short string."""
+        if not topic:
+            return ""
+        if isinstance(topic, str):
+            return topic
+        if isinstance(topic, dict):
+            for key in ("event", "title", "name", "topic", "description"):
+                value = topic.get(key)
+                if value:
+                    return str(value)
+        return str(topic)
     
     async def generate_ending(self) -> dict:
         """
@@ -363,12 +376,33 @@ class InterviewAgent:
             )
             content = result.content
             if isinstance(content, dict):
-                return content.get("questions", [])
+                return self._normalize_next_questions(content.get("questions", []))
             parsed = json.loads(content)
-            return parsed.get("questions", [])
+            return self._normalize_next_questions(parsed.get("questions", []))
         except Exception as e:
             logger.error(f"Failed to generate next-session questions: {e}")
             return []
+
+    def _normalize_next_questions(self, questions: list) -> list:
+        """清理模型偶发混入的格式残留，只保留可直接展示的问题文本。"""
+        import re
+
+        cleaned = []
+        for question in questions or []:
+            text = str(question).strip()
+            for marker in ["[/s]", "</think>", "<think>", "已严格", "```"]:
+                idx = text.find(marker)
+                if idx > 0:
+                    text = text[:idx]
+            text = re.sub(r"[\"'“”\]\}\s，。]+$", "", text).strip()
+            text = re.sub(r"^[\d\.\)、\s]+", "", text).strip()
+            if not text or any(token in text for token in ["JSON", "{", "}", "[/s]", "</think>"]):
+                continue
+            if "？" not in text and "?" not in text:
+                continue
+            if text not in cleaned:
+                cleaned.append(text)
+        return cleaned[:8]
 
     def _format_recent_conversation(self, n: int = 20) -> str:
         """格式化最近N轮对话历史。"""

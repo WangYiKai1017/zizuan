@@ -3,6 +3,7 @@ from datetime import datetime
 import logging
 import json
 import os
+import re
 
 from src.services.llm_service import LLMService, get_llm_service
 from src.services.memory_manager import MemoryManager
@@ -90,11 +91,27 @@ class ProfileCollectionAgent:
         start_idx = content.find(start_marker)
         if start_idx == -1:
             return ""
-        start_idx = content.find("```", start_idx) + 3
-        end_idx = content.find("```", start_idx)
+        end_idx = content.find(end_marker, start_idx)
         if end_idx == -1:
-            return ""
-        return content[start_idx:end_idx].strip()
+            end_idx = len(content)
+
+        section = content[start_idx:end_idx].strip()
+        lines = section.splitlines()
+
+        # Prompt sections are wrapped in ```markdown blocks, but also contain
+        # nested ```json examples. Strip only the outer wrapper.
+        first_fence = next(
+            (i for i, line in enumerate(lines) if line.strip().startswith("```")),
+            None,
+        )
+        if first_fence is not None:
+            lines = lines[first_fence + 1:]
+            for i in range(len(lines) - 1, -1, -1):
+                if lines[i].strip() == "```":
+                    del lines[i]
+                    break
+
+        return "\n".join(lines).strip()
     
     async def start(self) -> str:
         """启动初始化流程"""
@@ -112,12 +129,8 @@ class ProfileCollectionAgent:
         welcome_message = welcome_message.content
         
         # 解析JSON响应
-        try:
-            welcome_data = json.loads(welcome_message)
-            message = welcome_data.get("message", welcome_message)
-        except json.JSONDecodeError:
-            # 如果不是JSON格式，直接使用
-            message = welcome_message
+        welcome_data = self._parse_json_response(welcome_message)
+        message = welcome_data.get("message", welcome_message) if welcome_data else welcome_message
         
         # 记录对话
         self.conversation_history.append({
@@ -147,7 +160,7 @@ class ProfileCollectionAgent:
         
         # 提取信息
         extracted = await self._extract_info(user_input)
-        self.collected_info.update(extracted)
+        self.collected_info.update(self._normalize_fields(extracted))
         
         # 检查结束条件
         if self._should_complete():
@@ -175,42 +188,196 @@ class ProfileCollectionAgent:
         extraction_prompt = self.prompt_templates.get("profile_extraction", "")
         
         # 注入变量
+        question_bank = {
+            "name": {"question": "请问您怎么称呼？", "field": "name"},
+            "age": {"question": "请问您今年高寿了？", "field": "age"},
+            "occupation": {"question": "您以前是做什么工作的？", "field": "occupation"},
+            "birth_place": {"question": "您是在哪儿出生的？", "field": "birth_place"},
+            "family_status": {"question": "您的家庭状况是怎样的？", "field": "family_status"},
+            "living_arrangement": {"question": "您现在是和家人一起住，还是独居？", "field": "living_arrangement"},
+            "story_expectation": {"question": "您最想讲述自己人生中的哪些故事？", "field": "story_expectation"},
+            "important_person": {"question": "在您的生命中，有没有对您影响特别大的人？", "field": "important_person"},
+        }
         prompt = extraction_prompt.replace("{{user_input}}", user_input)
-        prompt = prompt.replace("{{collected_info}}", str(self.collected_info))
+        prompt = prompt.replace("{{question_bank}}", json.dumps(question_bank, ensure_ascii=False, indent=2))
+        prompt = prompt.replace("{{already_collected}}", json.dumps(self.collected_info, ensure_ascii=False))
+        prompt = prompt.replace("{{collected_info}}", json.dumps(self.collected_info, ensure_ascii=False))
         
         # 确保prompt包含"json"字样以满足API要求
         prompt += "\n\n请以JSON格式输出结果，包含fields字段。"
-        result = await self.llm_service.invoke(
-            prompt=prompt,
-            temperature=0.3,
-            response_format={"type": "json_object"},
-            history=self.conversation_history  # 传递对话历史
-        )
-        result = result.content
+        fields: Dict[str, Any] = {}
         
         # 解析结果
         try:
+            result = await self.llm_service.invoke(
+                prompt=prompt,
+                temperature=0.3,
+                response_format={"type": "json_object"},
+                history=self.conversation_history  # 传递对话历史
+            )
+            result = result.content
+
             if isinstance(result, dict):
                 fields = result.get("fields", {})
             else:
-                result_dict = json.loads(result)
+                result_dict = self._parse_json_response(result) or {}
                 fields = result_dict.get("fields", {})
             
             # 确保返回的是字典
             if isinstance(fields, dict):
-                return fields
+                pass
             elif isinstance(fields, (list, tuple)):
                 # 如果是列表或元组，尝试将其转换为字典
                 # 过滤掉长度不为2的元素
                 valid_items = [item for item in fields if isinstance(item, (list, tuple)) and len(item) == 2]
-                return dict(valid_items)
+                fields = dict(valid_items)
             else:
                 logger.warning(f"Unexpected fields type: {type(fields)}, returning empty dict")
-                return {}
+                fields = {}
                 
         except (json.JSONDecodeError, AttributeError) as e:
             logger.error(f"Failed to parse extraction result: {result}, error: {e}")
+            fields = {}
+        except Exception as e:
+            logger.error(f"Profile extraction LLM call failed: {e}")
+            fields = {}
+
+        fallback_fields = self._fallback_extract_info(user_input)
+        normalized = self._normalize_fields(fields)
+        for key, value in fallback_fields.items():
+            if self._should_use_fallback_value(key, normalized.get(key), value):
+                normalized[key] = value
+        return normalized
+
+    def _parse_json_response(self, content: Any) -> Optional[Dict[str, Any]]:
+        """兼容裸 JSON 和 fenced code block JSON。"""
+        if isinstance(content, dict):
+            return content
+        if not isinstance(content, str):
+            return None
+
+        text = content.strip()
+        if text.startswith("```"):
+            text = re.sub(r"^```(?:json|markdown)?\s*", "", text, flags=re.IGNORECASE)
+            text = re.sub(r"\s*```$", "", text).strip()
+
+        try:
+            parsed = json.loads(text)
+            return parsed if isinstance(parsed, dict) else None
+        except json.JSONDecodeError:
+            match = re.search(r"\{.*\}", text, flags=re.DOTALL)
+            if match:
+                try:
+                    parsed = json.loads(match.group(0))
+                    return parsed if isinstance(parsed, dict) else None
+                except json.JSONDecodeError:
+                    return None
+        return None
+
+    def _should_use_fallback_value(self, key: str, current: Any, fallback: Any) -> bool:
+        """当 LLM 返回过于概括时，保留自然文本中更具体的信息。"""
+        if fallback is None or fallback == "":
+            return False
+        if current is None or current == "":
+            return True
+
+        current_text = self._stringify_field(current)
+        fallback_text = self._stringify_field(fallback)
+        generic_values = {
+            "family_status": {"已婚", "丧偶", "离异", "未婚"},
+            "living_arrangement": {"与老伴同住", "与子女同住", "独居", "养老院"},
+        }
+        if current_text in generic_values.get(key, set()) and len(fallback_text) > len(current_text):
+            return True
+
+        return len(fallback_text) >= len(current_text) + 6
+
+    def _stringify_field(self, value: Any) -> str:
+        if isinstance(value, list):
+            return "、".join(str(item) for item in value if item)
+        if isinstance(value, dict):
+            return json.dumps(value, ensure_ascii=False)
+        return str(value)
+
+    def _normalize_fields(self, fields: Dict[str, Any]) -> Dict[str, Any]:
+        """规范化画像字段名和值，兼容 LLM 返回的常见别名。"""
+        if not isinstance(fields, dict):
             return {}
+
+        aliases = {
+            "姓名": "name",
+            "名字": "name",
+            "高寿": "age",
+            "年龄": "age",
+            "职业": "occupation",
+            "工作": "occupation",
+            "家庭": "family_status",
+            "家庭状况": "family_status",
+            "居住": "living_arrangement",
+            "居住情况": "living_arrangement",
+            "居住安排": "living_arrangement",
+            "想讲述的故事": "story_expectation",
+            "故事期望": "story_expectation",
+            "人生故事": "story_expectation",
+            "children": "children_count",
+        }
+
+        normalized: Dict[str, Any] = {}
+        for key, value in fields.items():
+            canonical = aliases.get(str(key), str(key))
+            if value is None or value == "":
+                continue
+            normalized[canonical] = self._stringify_field(value)
+        return normalized
+
+    def _fallback_extract_info(self, user_input: str) -> Dict[str, Any]:
+        """从常见中文自我介绍里保守提取必填字段，作为 LLM 兜底。"""
+        text = user_input.strip()
+        fields: Dict[str, Any] = {}
+
+        name_match = re.search(r"(?:我叫|我是|姓名[=:：]?|name[=:：]?)([\u4e00-\u9fa5]{2,6})", text, re.IGNORECASE)
+        if name_match:
+            fields["name"] = name_match.group(1)
+
+        age_match = re.search(r"(?:今年|年龄[=:：]?|age[=:：]?)?\s*(\d{1,3})\s*岁", text, re.IGNORECASE)
+        if age_match:
+            fields["age"] = int(age_match.group(1))
+
+        occupation_patterns = [
+            r"(?:退休前是|以前是|原来是|职业[=:：]?|occupation[=:：]?)([^。；;\n，,]+)",
+            r"(退休[^。；;\n，,]{1,20})",
+        ]
+        for pattern in occupation_patterns:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match:
+                fields["occupation"] = match.group(1).strip()
+                break
+
+        family_keywords = ["妻子", "老伴", "丈夫", "女儿", "儿子", "外孙", "孙子", "孙女", "家庭状况", "family_status"]
+        if any(keyword in text for keyword in family_keywords):
+            match = re.search(r"((?:我和|家庭状况[=:：]?|family_status[=:：]?)?[^。；;\n]*(?:妻子|老伴|丈夫|女儿|儿子|外孙女|外孙|孙子|孙女)[^。；;\n]*)", text, re.IGNORECASE)
+            if match:
+                fields["family_status"] = match.group(1).strip(" ，,；;")
+
+        living_match = re.search(r"(?:住在|居住(?:在|情况[=:：]?)?|living_arrangement[=:：]?)([^。；;\n，,]+)", text, re.IGNORECASE)
+        if living_match:
+            living = living_match.group(1).strip(" ，,；;")
+            if living:
+                if "妻子" in text or "老伴" in text:
+                    living = f"{living}，与老伴同住"
+                fields["living_arrangement"] = living
+
+        expectation_match = re.search(
+            r"(?:希望|想|story_expectation[=:：]?|故事期望[=:：]?)(?:这次自传|把|重点)?(?:记录|讲述|留下)?([^。；;\n]+)",
+            text,
+            re.IGNORECASE,
+        )
+        if expectation_match:
+            expectation = expectation_match.group(1).strip(" ，,；;")
+            if expectation:
+                fields["story_expectation"] = expectation
+
+        return fields
     
     def _should_complete(self) -> bool:
         """判断是否应该结束初始化"""
@@ -234,9 +401,30 @@ class ProfileCollectionAgent:
         """
         # 加载profile_collection prompt
         collection_prompt = self.prompt_templates.get("profile_collection", "")
+
+        missing_required = [
+            field for field in self.required_fields
+            if field not in self.collected_info or not self.collected_info[field]
+        ]
+        optional_fields = [
+            "gender", "birth_year", "birth_place", "children_count",
+            "health_status", "important_person", "favorite_memory",
+        ]
+        current_state = "READY" if not missing_required else "COLLECT_BASIC"
+        last_user_input = ""
+        for turn in reversed(self.conversation_history):
+            if turn.get("role") == "user":
+                last_user_input = turn.get("content", "")
+                break
         
         # 注入上下文
-        prompt = collection_prompt.replace("{{collected_info}}", str(self.collected_info))
+        prompt = collection_prompt.replace("{{current_state}}", current_state)
+        prompt = prompt.replace("{{collected_fields}}", json.dumps(self.collected_info, ensure_ascii=False))
+        prompt = prompt.replace("{{required_fields}}", json.dumps(missing_required, ensure_ascii=False))
+        prompt = prompt.replace("{{optional_fields}}", json.dumps(optional_fields, ensure_ascii=False))
+        prompt = prompt.replace("{{last_user_input}}", last_user_input)
+        prompt = prompt.replace("{{elderly_title}}", "老人家")
+        prompt = prompt.replace("{{collected_info}}", json.dumps(self.collected_info, ensure_ascii=False))
         prompt = prompt.replace("{{conversation_history}}", self._format_history())
         
         question = await self.llm_service.invoke(
@@ -247,12 +435,8 @@ class ProfileCollectionAgent:
         question = question.content
         
         # 解析JSON响应
-        try:
-            question_data = json.loads(question)
-            return question_data.get("question", question)
-        except json.JSONDecodeError:
-            # 如果不是JSON格式，直接使用
-            return question
+        question_data = self._parse_json_response(question)
+        return question_data.get("question", question) if question_data else question
     
     async def _generate_completion_message(self) -> str:
         """生成初始化完成的消息"""
