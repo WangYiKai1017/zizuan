@@ -1,15 +1,134 @@
 """Interview agent route handlers."""
 import asyncio
+import re
+from pathlib import Path
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse
 from sse_starlette.sse import EventSourceResponse
 
-from src.service.schemas.requests import UserIdRequest, InterviewMessageRequest, InterviewEndRequest, ErrorResponse
+from src.service.schemas.requests import (
+    UserIdRequest,
+    InterviewMessageRequest,
+    InterviewEndRequest,
+    InterviewProfilePrefillRequest,
+    ErrorResponse,
+)
 from src.service.session_manager import SessionManager, AgentType, SessionConflictError
 from src.service.sse_response import SSEEmitter
 from src.service.agent_runners.interview_runner import InterviewRunner
+from src.storage.markdown_file_manager import MarkdownFileManager
 
 router = APIRouter(prefix="/interview", tags=["interview"])
+
+
+REQUIRED_PROFILE_FIELDS = [
+    "name",
+    "age",
+    "occupation",
+    "family_status",
+    "living_arrangement",
+    "story_expectation",
+]
+
+
+def _knowledge_base_root() -> Path:
+    return Path(__file__).resolve().parent.parent.parent.parent / "knowledge_base"
+
+
+def _normalize_gender(gender: str | None) -> str | None:
+    if not gender:
+        return None
+    normalized = gender.strip().lower()
+    male_values = {"男", "男性", "male", "m", "man"}
+    female_values = {"女", "女性", "female", "f", "woman"}
+    if normalized in male_values:
+        return "男"
+    if normalized in female_values:
+        return "女"
+    return gender.strip()
+
+
+def _extract_birth_year(birth_date: str | None) -> str | None:
+    if not birth_date:
+        return None
+    match = re.search(r"(19|20)\d{2}", birth_date)
+    return match.group(0) if match else None
+
+
+def _missing_required_profile_fields(profile_info: dict) -> list[str]:
+    return [
+        field
+        for field in REQUIRED_PROFILE_FIELDS
+        if not profile_info.get(field)
+    ]
+
+
+def _read_user_profile(file_manager: MarkdownFileManager) -> dict:
+    user_md_path = file_manager.base_path / "user.md"
+    if not user_md_path.exists():
+        return {}
+
+    key_map = {
+        "微信ID": "wechat_id",
+        "姓名": "name",
+        "年龄": "age",
+        "性别": "gender",
+        "出生日期": "birth_date",
+        "出生年份": "birth_year",
+        "职业": "occupation",
+        "家庭状况": "family_status",
+        "居住情况": "living_arrangement",
+        "故事期望": "story_expectation",
+    }
+    profile = {}
+    line_pattern = re.compile(r"^- (.+?):\s*(.+)$")
+    for line in user_md_path.read_text(encoding="utf-8").splitlines():
+        match = line_pattern.match(line.strip())
+        if not match:
+            continue
+        label, value = match.group(1).strip(), match.group(2).strip()
+        if label in key_map:
+            profile[key_map[label]] = value
+    return profile
+
+
+@router.post("/profile/prefill")
+async def prefill_interview_profile(request: InterviewProfilePrefillRequest):
+    """Store WeChat-provided profile fields before starting a new interview."""
+    user_id = request.user_id
+    profile_info = {
+        "wechat_id": request.wechat_id,
+        "name": request.name,
+        "age": request.age,
+        "birth_date": request.birth_date,
+        "birth_year": _extract_birth_year(request.birth_date),
+        "gender": _normalize_gender(request.gender),
+    }
+    profile_info = {
+        key: value
+        for key, value in profile_info.items()
+        if value is not None and value != ""
+    }
+
+    file_manager = MarkdownFileManager(
+        base_path=str(_knowledge_base_root()),
+        conversation_id=user_id,
+    )
+    profile_path = file_manager.create_or_update_user_md(profile_info)
+    summary_index_path = file_manager.create_or_update_summary_index()
+
+    stored_profile = _read_user_profile(file_manager)
+    missing_required = _missing_required_profile_fields(stored_profile)
+    return JSONResponse(content={
+        "status": "ok",
+        "user_id": user_id,
+        "wechat_id": request.wechat_id,
+        "profile": stored_profile,
+        "profile_path": profile_path,
+        "summary_index_path": summary_index_path,
+        "profile_complete": not missing_required,
+        "missing_required_fields": missing_required,
+    })
 
 
 @router.post("/start")

@@ -154,15 +154,9 @@ class InterviewSessionAgent:
                     logger.info(f"Required directory missing or not a directory: {dir_path}")
                     return False
             
-            # 检查是否包含除index.md之外的其他Markdown文件
-            has_other_md_files = False
-            for md_file in self.knowledge_base_path.rglob("*.md"):
-                if md_file.name != "index.md":
-                    has_other_md_files = True
-                    break
-            
-            if not has_other_md_files:
-                logger.info(f"No other Markdown files found except index.md in: {self.knowledge_base_path}")
+            profile_info = self._parse_user_md(self.user_id)
+            if not self._is_profile_complete(profile_info):
+                logger.info(f"Profile is incomplete for user: {self.user_id}")
                 return False
             
             logger.info(f"Knowledge base structure is complete for user: {self.user_id}")
@@ -380,17 +374,22 @@ class InterviewSessionAgent:
         4. 将对话记录传递给采访流程
         """
         self.phase = SessionPhase.PROFILE_COLLECTION
+
+        prefilled_profile = self._parse_user_md(self.user_id)
         
         # 创建初始化Agent（不使用时间限制，仅依赖必填字段检查）
         self.profile_agent = ProfileCollectionAgent(
             user_id=self.user_id,
             llm_service=self.llm_service,
             memory_manager=self.memory_manager,
-            max_duration_minutes=10**9
+            max_duration_minutes=10**9,
+            initial_info=prefilled_profile,
         )
         
         # 执行初始化流程
         welcome_message = await self.profile_agent.start()
+        if self.profile_agent.is_completed:
+            await self._on_profile_complete()
         
         # 注意：初始化Agent会持续运行，直到所有必填字段收集完成
         # 完成后会触发 _on_profile_complete
@@ -823,8 +822,12 @@ class InterviewSessionAgent:
             return {}
 
         key_map = {
+            "微信ID": "wechat_id",
             "姓名": "name",
             "年龄": "age",
+            "性别": "gender",
+            "出生日期": "birth_date",
+            "出生年份": "birth_year",
             "职业": "occupation",
             "家庭状况": "family_status",
             "居住情况": "living_arrangement",
@@ -843,6 +846,15 @@ class InterviewSessionAgent:
                 profile[key_map[cn_key]] = value
         return profile
 
+    def _is_profile_complete(self, profile_info: dict) -> bool:
+        """Return whether user.md has enough fields to skip profile collection."""
+        if not isinstance(profile_info, dict):
+            return False
+        return all(
+            profile_info.get(field)
+            for field in ProfileCollectionAgent.REQUIRED_FIELDS
+        )
+
     def _compute_address_style(self, profile_info: dict) -> str:
         """根据被采访者的年龄、姓名、性别提示计算称呼方式。
 
@@ -860,6 +872,7 @@ class InterviewSessionAgent:
         name = profile_info.get("name")
         age_value = profile_info.get("age")
         family_status = profile_info.get("family_status") or ""
+        gender_value = str(profile_info.get("gender") or "").strip().lower()
 
         # 解析年龄
         if age_value is None or age_value == "":
@@ -880,10 +893,13 @@ class InterviewSessionAgent:
             return "您"
         surname = surname[0]
 
-        # 性别推断：family_status 中出现“丈夫/老公”默认为女性；
-        # 出现“妻子/老婆/夫人”默认为男性。
+        # 优先使用外部画像提供的性别；缺失时再从 family_status 保守推断。
         gender: Optional[str] = None
-        if any(token in family_status for token in ["丈夫", "老公"]):
+        if gender_value in {"女", "女性", "female", "f", "woman"}:
+            gender = "female"
+        elif gender_value in {"男", "男性", "male", "m", "man"}:
+            gender = "male"
+        elif any(token in family_status for token in ["丈夫", "老公"]):
             gender = "female"
         elif any(token in family_status for token in ["妻子", "老婆", "夫人"]):
             gender = "male"

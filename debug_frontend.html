@@ -184,6 +184,8 @@
   .card h4, .subcard h4 { font-size: 14px; }
   .hint { margin: 0 0 12px; color: hsl(var(--muted-foreground)); font-size: 13px; }
   .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+  .field { display: grid; gap: 6px; }
   .actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 8px; }
   .spacer { flex: 1; }
   button {
@@ -383,6 +385,7 @@
     header { grid-template-columns: 1fr; }
     #apiBase, #userId { width: 100%; }
     .grid { grid-template-columns: 1fr; }
+    .form-grid { grid-template-columns: 1fr; }
   }
 </style>
 </head>
@@ -408,6 +411,7 @@
 
 <nav>
   <button class="active" data-tab="flow"><i data-lucide="layout-dashboard"></i>总览</button>
+  <button data-tab="prefill"><i data-lucide="id-card"></i>画像预填</button>
   <button data-tab="interview"><i data-lucide="messages-square"></i>对话采访</button>
   <button data-tab="kb"><i data-lucide="database-zap"></i>知识库整理</button>
   <button data-tab="outline"><i data-lucide="list-tree"></i>大纲生成</button>
@@ -423,33 +427,70 @@
         <p class="hint">从采访收集素材，到整理知识库、生成大纲、确认章节，再触发写作和查看结果。</p>
         <div id="flowSteps">
           <div class="step" data-step="health"><span class="num">1</span><div><div class="step-title">连接后端</div><div class="step-desc">检查 /health 是否可用</div></div><span class="badge">待检测</span></div>
-          <div class="step" data-step="interview"><span class="num">2</span><div><div class="step-title">采访会话</div><div class="step-desc">启动会话、发送消息、结束并保存素材</div></div><span class="badge">待开始</span></div>
-          <div class="step" data-step="kb"><span class="num">3</span><div><div class="step-title">知识库整理</div><div class="step-desc">运行去重、冲突检测、链接修复等整理任务</div></div><span class="badge">待运行</span></div>
-          <div class="step" data-step="outline"><span class="num">4</span><div><div class="step-title">大纲生成</div><div class="step-desc">扫描材料并生成传记章节大纲</div></div><span class="badge">待生成</span></div>
-          <div class="step" data-step="confirm"><span class="num">5</span><div><div class="step-title">确认章节</div><div class="step-desc">将 draft 章节标记为 confirmed，写作 Agent 才会处理</div></div><span class="badge">待确认</span></div>
-          <div class="step" data-step="writing"><span class="num">6</span><div><div class="step-title">传记写作</div><div class="step-desc">生成章节文件并合并完整传记</div></div><span class="badge">待写作</span></div>
+          <div class="step" data-step="prefill"><span class="num">2</span><div><div class="step-title">画像预填</div><div class="step-desc">写入微信侧姓名、年龄、出生日期、性别</div></div><span class="badge">待预填</span></div>
+          <div class="step" data-step="interview"><span class="num">3</span><div><div class="step-title">采访会话</div><div class="step-desc">启动会话、发送消息、结束并保存素材</div></div><span class="badge">待开始</span></div>
+          <div class="step" data-step="kb"><span class="num">4</span><div><div class="step-title">知识库整理</div><div class="step-desc">运行去重、冲突检测、链接修复等整理任务</div></div><span class="badge">待运行</span></div>
+          <div class="step" data-step="outline"><span class="num">5</span><div><div class="step-title">大纲生成</div><div class="step-desc">扫描材料并生成传记章节大纲</div></div><span class="badge">待生成</span></div>
+          <div class="step" data-step="confirm"><span class="num">6</span><div><div class="step-title">确认章节</div><div class="step-desc">将 draft 章节标记为 confirmed，写作 Agent 才会处理</div></div><span class="badge">待确认</span></div>
+          <div class="step" data-step="writing"><span class="num">7</span><div><div class="step-title">传记写作</div><div class="step-desc">生成章节文件并合并完整传记</div></div><span class="badge">待写作</span></div>
         </div>
       </div>
       <div class="card">
         <h3>快速操作</h3>
         <div class="actions">
           <button class="primary" onclick="checkHealth()"><i data-lucide="plug-zap"></i>检测连接</button>
+          <button onclick="selectTab('prefill')"><i data-lucide="id-card"></i>画像预填</button>
+        </div>
+        <div class="actions">
           <button onclick="selectTab('interview')"><i data-lucide="message-circle-plus"></i>开始采访</button>
-        </div>
-        <div class="actions">
           <button onclick="runKBOrganizer()"><i data-lucide="combine"></i>运行整理</button>
+        </div>
+        <div class="actions">
           <button onclick="generateOutline()"><i data-lucide="sparkles"></i>生成大纲</button>
-        </div>
-        <div class="actions">
           <button onclick="confirmAllDrafts()"><i data-lucide="check-check"></i>确认草稿</button>
-          <button onclick="runWriting()"><i data-lucide="file-pen-line"></i>开始写作</button>
         </div>
         <div class="actions">
+          <button onclick="runWriting()"><i data-lucide="file-pen-line"></i>开始写作</button>
           <button onclick="loadFileTree()"><i data-lucide="refresh-cw"></i>刷新文件</button>
+        </div>
+        <div class="actions">
           <button onclick="loadFullBiography()"><i data-lucide="book-open"></i>查看传记</button>
         </div>
         <div id="flowLog" class="log" style="margin-top:12px;"></div>
       </div>
+    </div>
+	  </div>
+
+  <div id="panel-prefill" class="panel">
+    <div class="card">
+      <div class="row">
+        <h3 class="spacer">微信画像预填 <span id="prefillStatus" class="badge">未提交</span></h3>
+        <button class="primary" id="prefillBtn" onclick="prefillProfile()"><i data-lucide="save"></i>保存预填</button>
+      </div>
+      <p class="hint">使用顶部用户 ID 写入同一个知识库文件夹；提交成功后再启动采访。</p>
+      <div class="form-grid">
+        <div class="field">
+          <label for="wechatId">微信 ID</label>
+          <input id="wechatId" value="wx_openid_test_001" placeholder="wx_openid_xxx">
+        </div>
+        <div class="field">
+          <label for="prefillName">姓名</label>
+          <input id="prefillName" value="王秀兰" placeholder="王秀兰">
+        </div>
+        <div class="field">
+          <label for="prefillAge">年龄</label>
+          <input id="prefillAge" value="78" inputmode="numeric" placeholder="78">
+        </div>
+        <div class="field">
+          <label for="prefillBirthDate">出生日期</label>
+          <input id="prefillBirthDate" value="1948-01-02" placeholder="1948-01-02">
+        </div>
+        <div class="field">
+          <label for="prefillGender">性别</label>
+          <input id="prefillGender" value="女" placeholder="男 / 女">
+        </div>
+      </div>
+      <div id="prefillLog" class="log" style="margin-top:12px;"></div>
     </div>
   </div>
 
@@ -681,6 +722,52 @@ function getCandidateQuestions() {
     .map(x => x.trim())
     .filter(Boolean)
     .map((question, i) => ({ id: `debug_q_${i + 1}`, question }));
+}
+function getPrefillPayload() {
+  const ageRaw = $('#prefillAge').value.trim();
+  const payload = {
+    user_id: uid(),
+    wechat_id: $('#wechatId').value.trim(),
+    name: $('#prefillName').value.trim(),
+    birth_date: $('#prefillBirthDate').value.trim(),
+    gender: $('#prefillGender').value.trim(),
+  };
+  if (ageRaw) payload.age = Number(ageRaw);
+  return payload;
+}
+async function prefillProfile() {
+  selectTab('prefill');
+  const log = $('#prefillLog');
+  log.innerHTML = '';
+  $('#prefillStatus').textContent = '提交中';
+  $('#prefillBtn').disabled = true;
+  setStep('prefill', 'current', '提交中');
+  try {
+    await ensureBackend('画像预填');
+    const payload = getPrefillPayload();
+    if (!payload.user_id) throw new Error('用户 ID 必填');
+    if (!payload.wechat_id) throw new Error('微信 ID 必填');
+    const r = await fetch(api() + '/api/interview/profile/prefill', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (!r.ok) throw new Error(await parseResponseError(r));
+    const data = await r.json();
+    $('#prefillStatus').textContent = data.profile_complete ? '画像完整' : '已预填';
+    setStep('prefill', 'done', data.profile_complete ? '画像完整' : '已预填');
+    logLine(log, 'success', `已写入用户 ${data.user_id} 的画像预填`);
+    const missing = data.missing_required_fields || [];
+    if (missing.length) logLine(log, 'info', '仍需采访收集：' + missing.join(', '));
+    logLine(log, 'info', '已保存字段：' + JSON.stringify(data.profile || {}, null, 2));
+    await loadFileTree();
+  } catch (e) {
+    $('#prefillStatus').textContent = '失败';
+    setStep('prefill', 'error', '失败');
+    logLine(log, 'error', e.message);
+  } finally {
+    $('#prefillBtn').disabled = false;
+  }
 }
 async function startInterview() {
   selectTab('interview');
@@ -1052,7 +1139,17 @@ async function loadFileContent(path) {
 
 $('#apiBase').value = localStorage.getItem('debug_api_base') || '';
 $('#userId').value = localStorage.getItem('debug_user_id') || $('#userId').value;
+$('#wechatId').value = localStorage.getItem('debug_wechat_id') || $('#wechatId').value;
+$('#prefillName').value = localStorage.getItem('debug_prefill_name') || $('#prefillName').value;
+$('#prefillAge').value = localStorage.getItem('debug_prefill_age') || $('#prefillAge').value;
+$('#prefillBirthDate').value = localStorage.getItem('debug_prefill_birth_date') || $('#prefillBirthDate').value;
+$('#prefillGender').value = localStorage.getItem('debug_prefill_gender') || $('#prefillGender').value;
 $('#apiBase').addEventListener('change', () => localStorage.setItem('debug_api_base', $('#apiBase').value));
+$('#wechatId').addEventListener('change', () => localStorage.setItem('debug_wechat_id', $('#wechatId').value));
+$('#prefillName').addEventListener('change', () => localStorage.setItem('debug_prefill_name', $('#prefillName').value));
+$('#prefillAge').addEventListener('change', () => localStorage.setItem('debug_prefill_age', $('#prefillAge').value));
+$('#prefillBirthDate').addEventListener('change', () => localStorage.setItem('debug_prefill_birth_date', $('#prefillBirthDate').value));
+$('#prefillGender').addEventListener('change', () => localStorage.setItem('debug_prefill_gender', $('#prefillGender').value));
 $('#userId').addEventListener('change', () => {
   localStorage.setItem('debug_user_id', $('#userId').value);
   state.outline = null;
