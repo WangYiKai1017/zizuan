@@ -257,6 +257,8 @@ class InterviewSessionAgent:
             resume_prompt=resume_prompt,
             initial_history=history,
             address_style=self.address_style,
+            knowledge_base_root=self.knowledge_base_root,
+            guided_resume_summary=prev_context.get("summary"),
         )
 
         # 6.1 将上次的话题历史与当前话题方向注入 InterviewAgent
@@ -389,7 +391,7 @@ class InterviewSessionAgent:
         # 执行初始化流程
         welcome_message = await self.profile_agent.start()
         if self.profile_agent.is_completed:
-            await self._on_profile_complete()
+            return await self._on_profile_complete()
         
         # 注意：初始化Agent会持续运行，直到所有必填字段收集完成
         # 完成后会触发 _on_profile_complete
@@ -425,7 +427,7 @@ class InterviewSessionAgent:
 
         # 检查是否完成初始化
         if self.profile_agent.is_completed:
-            await self._on_profile_complete()
+            response = await self._on_profile_complete()
 
         return QuestionResult(
             question=response,
@@ -433,7 +435,7 @@ class InterviewSessionAgent:
             candidate_question_id=None,
         )
     
-    async def _on_profile_complete(self):
+    async def _on_profile_complete(self) -> str:
         """
         初始化完成后的处理
         
@@ -478,9 +480,12 @@ class InterviewSessionAgent:
             archive_tool=self.archive_tool,
             initial_history=profile_history,
             address_style=self.address_style,
+            knowledge_base_root=self.knowledge_base_root,
         )
+        self.interview_agent.guided_controller.ensure_state()
         
         self.phase = SessionPhase.INTERVIEW
+        return await self.interview_agent.start()
     
     async def _handle_interview_input(
         self,

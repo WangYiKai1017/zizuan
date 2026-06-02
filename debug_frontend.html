@@ -830,7 +830,8 @@ async function sendMessage() {
       if (state.interviewSessionId !== currentSessionId) continue;
       if (ev.event === 'agent_message') {
         const source = ev.data.question_source ? `，来源：${ev.data.question_source}` : '';
-        addChatMsg('agent', ev.data.message, '阶段：' + (ev.data.phase || '?') + source);
+        const candidateId = ev.data.candidate_question_id ? `，候选：${ev.data.candidate_question_id}` : '';
+        addChatMsg('agent', ev.data.message, '阶段：' + (ev.data.phase || '?') + source + candidateId);
       } else if (ev.event === 'phase_changed') {
         addChatMsg('system', `阶段切换：${ev.data.from_phase} -> ${ev.data.to_phase}`);
       } else if (ev.event === 'error' || ev.event === 'failed') {

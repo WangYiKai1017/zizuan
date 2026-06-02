@@ -108,7 +108,7 @@ data: {"code": "AGENT_ERROR", "message": "LLM 服务调用失败", "recoverable"
 
 ## 三、采访 Agent 接口（交互式）
 
-采访 Agent 支持持续多轮对话，分为「用户信息收集」和「主体采访」两个阶段。每次会话最长 15 分钟。
+采访 Agent 支持持续多轮对话，分为「用户信息收集」和「主体采访」两个阶段。主体采访内部会先执行一段初期受控采访，再进入自由发散采访。每次会话最长 15 分钟。
 
 ### 3.0 微信画像预填（启动前调用）
 
@@ -168,6 +168,16 @@ data: {"code": "AGENT_ERROR", "message": "LLM 服务调用失败", "recoverable"
 ```
 
 预填接口只会写入已知字段。当前画像流程仍需要补齐：`occupation`、`family_status`、`living_arrangement`、`story_expectation`。这些字段补齐后，用户才会被视为已完成画像并直接进入主体采访。
+
+### 3.0.1 初期受控采访
+
+画像完成后，服务端会在主体采访内部先使用静态预设问题清单引导早期访谈。该流程不新增 API，也不会在正式响应里额外返回进度字段。
+
+- 静态问题配置位于 `src/config/initial_interview_questions.py`
+- 进度状态保存到 `knowledge_base/{user_id}/guided_initial_state.json`
+- 每个预设问题最多追问 1 次；AI 可自然过渡到下一个问题
+- 如果用户主动提到强相关候选问题，仍会通过现有 `question_source=candidate_question` 和 `candidate_question_id` 返回给前端
+- 预设问题全部完成后，采访自动切回自由发散模式
 
 ### 3.1 启动会话
 
