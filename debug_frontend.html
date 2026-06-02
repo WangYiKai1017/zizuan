@@ -670,7 +670,11 @@ function setInterviewEnabled(enabled) {
   $('#endBtn').disabled = !enabled || state.messageInFlight;
   $('#interviewInputRow').style.display = enabled ? 'flex' : 'none';
   $('#msgInput').disabled = !enabled;
-  $('#sendBtn').disabled = !enabled;
+  $('#sendBtn').disabled = !enabled || state.messageInFlight;
+}
+async function ensureBackend(actionName = '操作') {
+  const ok = await checkHealth();
+  if (!ok) throw new Error(`${actionName}已取消：后端未连接，请先启动 8000 端口服务。`);
 }
 function getCandidateQuestions() {
   return $('#candidateQuestions').value.split('\n')
@@ -680,11 +684,16 @@ function getCandidateQuestions() {
 }
 async function startInterview() {
   selectTab('interview');
+  state.interviewSessionId = null;
+  state.messageInFlight = false;
+  setInterviewEnabled(false);
+  $('#interviewStatus').textContent = '未开始';
   $('#startBtn').disabled = true;
   setStep('interview', 'current', '启动中');
   chatBox.innerHTML = '';
   addChatMsg('system', '正在连接服务器...');
   try {
+    await ensureBackend('启动采访');
     for await (const ev of sseStream(api() + '/api/interview/start', { user_id: uid() })) {
       if (ev.event === 'session_started') {
         state.interviewSessionId = ev.data.session_id;
@@ -706,6 +715,9 @@ async function startInterview() {
     }
   } catch (e) {
     addChatMsg('system', '启动失败：' + e.message);
+    state.interviewSessionId = null;
+    setInterviewEnabled(false);
+    $('#interviewStatus').textContent = '未开始';
     setStep('interview', 'error', '失败');
   } finally {
     $('#startBtn').disabled = false;
@@ -784,6 +796,7 @@ async function runKBOrganizer() {
   setStep('kb', 'current', '运行中');
   logLine(log, 'info', '启动知识库整理...');
   try {
+    await ensureBackend('知识库整理');
     for await (const ev of sseStream(api() + '/api/kb-organizer/run', { user_id: uid() })) {
       if (ev.event === 'task_started') logLine(log, 'info', `任务已启动，共 ${ev.data.task_count ?? '?'} 个步骤`);
       else if (ev.event === 'task_progress') logLine(log, 'progress', `[${ev.data.task_id}] ${ev.data.status}: ${ev.data.description || ''}`);
@@ -815,6 +828,7 @@ async function generateOutline() {
   setStep('outline', 'current', '生成中');
   logLine(log, 'info', '启动大纲生成...');
   try {
+    await ensureBackend('大纲生成');
     for await (const ev of sseStream(api() + '/api/biography/outline/generate', { user_id: uid() })) {
       if (ev.event === 'task_started') logLine(log, 'info', '开始分析知识库...');
       else if (ev.event === 'scanning') logLine(log, 'info', ev.data.message || '扫描中');
@@ -920,6 +934,7 @@ async function runWriting() {
   setStep('writing', 'current', '写作中');
   logLine(log, 'info', '启动传记写作...');
   try {
+    await ensureBackend('传记写作');
     for await (const ev of sseStream(api() + '/api/biography/writing/run', { user_id: uid() })) {
       if (ev.event === 'task_started') logLine(log, 'info', `待写章节：${ev.data.chapters_to_write ?? '?'}`);
       else if (ev.event === 'loading_tasks') logLine(log, 'info', `加载任务：${(ev.data.chapters || []).join(', ')}`);
