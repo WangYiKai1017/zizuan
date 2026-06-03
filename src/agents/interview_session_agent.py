@@ -11,6 +11,7 @@ from src.services.question_generator import QuestionResult
 from src.services.llm_service import LLMService, get_llm_service
 from src.services.memory_manager import MemoryManager
 from src.services.knowledge_base_querier import KnowledgeBaseQuerier
+from src.services.observability import observe_step
 from src.models import SessionState, HandoffPackage
 from src.tools import (
     MemoryCacheTool,
@@ -216,7 +217,8 @@ class InterviewSessionAgent:
         query_prompt = self._build_resume_analysis_prompt(history)
         analysis_result = await self.llm_service.invoke(
             prompt=query_prompt,
-            temperature=0.3
+            temperature=0.3,
+            trace_node="resume.analyze_needed_knowledge",
         )
         analysis_result = analysis_result.content
         
@@ -226,11 +228,17 @@ class InterviewSessionAgent:
             logger.info(f"重复查询请求，已跳过：{analysis_result[:50]}...")
             knowledge_context = ""
         else:
-            knowledge_context = await self.query_tool.query(
-                user_id=self.user_id,
-                query=analysis_result,
-                max_iterations=5
-            )
+            with observe_step(
+                "resume.kb_query",
+                as_type="tool",
+                input={"query": analysis_result},
+                metadata={"max_iterations": 5},
+            ):
+                knowledge_context = await self.query_tool.query(
+                    user_id=self.user_id,
+                    query=analysis_result,
+                    max_iterations=5
+                )
             self.current_round_queries.add(query_hash)  # 记录已查询的请求
         
         # 4. 缓存知识库查询结果
@@ -450,18 +458,20 @@ class InterviewSessionAgent:
         self.conversation_history.extend(profile_history)
         
         # 2. 生成基础知识库
-        await self.archive_tool.create_user_knowledge_base(
-            user_id=self.user_id,
-            conversation_history=profile_history,
-            profile_info=self.profile_agent.collected_info
-        )
+        with observe_step("profile.create_user_knowledge_base", as_type="tool"):
+            await self.archive_tool.create_user_knowledge_base(
+                user_id=self.user_id,
+                conversation_history=profile_history,
+                profile_info=self.profile_agent.collected_info
+            )
 
         # 2.1 将当前内容归档
-        await self.archive_tool.archive_conversation(
-            user_id=self.user_id,
-            conversation_history=profile_history,
-            session_summary="用户初始化对话存档"
-        )
+        with observe_step("profile.archive_conversation", as_type="tool"):
+            await self.archive_tool.archive_conversation(
+                user_id=self.user_id,
+                conversation_history=profile_history,
+                session_summary="用户初始化对话存档"
+            )
         
         # 3. 标记已初始化
         self.has_profile = True
@@ -561,11 +571,12 @@ class InterviewSessionAgent:
         summary = self._sanitize_archive_text(summary)
 
         # 先归档对话记录，让 session 归档可以引用本次结构化提取结果。
-        organized_memory = await self.archive_tool.archive_conversation(
-            user_id=self.user_id,
-            conversation_history=self.conversation_history,
-            session_summary=self.interview_agent.session_summary
-        )
+        with observe_step("ending.archive_conversation", as_type="tool"):
+            organized_memory = await self.archive_tool.archive_conversation(
+                user_id=self.user_id,
+                conversation_history=self.conversation_history,
+                session_summary=self.interview_agent.session_summary
+            )
 
         events, people, timepoints = self._format_session_archive_items(organized_memory)
 
@@ -587,7 +598,8 @@ class InterviewSessionAgent:
         }
 
         # 创建采访记录归档
-        await self.archive_tool.create_session_archive(self.user_id, session_data)
+        with observe_step("ending.create_session_archive", as_type="tool"):
+            await self.archive_tool.create_session_archive(self.user_id, session_data)
         
         self.phase = SessionPhase.CLOSED
         return ending_message
@@ -671,16 +683,18 @@ class InterviewSessionAgent:
         if self.profile_agent:
             profile_history = self.profile_agent.get_conversation_history()
             self.conversation_history = list(profile_history)
-            await self.archive_tool.create_user_knowledge_base(
-                user_id=self.user_id,
-                conversation_history=profile_history,
-                profile_info=self.profile_agent.collected_info
-            )
-            await self.archive_tool.archive_conversation(
-                user_id=self.user_id,
-                conversation_history=profile_history,
-                session_summary="用户初始化对话结束归档"
-            )
+            with observe_step("profile.create_user_knowledge_base", as_type="tool"):
+                await self.archive_tool.create_user_knowledge_base(
+                    user_id=self.user_id,
+                    conversation_history=profile_history,
+                    profile_info=self.profile_agent.collected_info
+                )
+            with observe_step("profile.archive_conversation", as_type="tool"):
+                await self.archive_tool.archive_conversation(
+                    user_id=self.user_id,
+                    conversation_history=profile_history,
+                    session_summary="用户初始化对话结束归档"
+                )
             self.phase = SessionPhase.CLOSED
             return "今天的采访就到这里啦，非常感谢您的分享。期待下次再聊！"
 

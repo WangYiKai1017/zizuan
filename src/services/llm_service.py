@@ -11,6 +11,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_openai import ChatOpenAI
 
 from src.config.llm_config import LLMConfig
+from src.services.observability import build_llm_config, get_observability_context
 from src.prompts.base import PromptTemplate
 
 logger = logging.getLogger(__name__)
@@ -82,6 +83,7 @@ class LLMService:
         self._call_history: List[LLMCallResult] = []
         self._total_tokens = 0
         self._langfuse_handler: Optional[Any] = None
+        self._langfuse_handler_cls: Optional[Any] = None
 
         # 初始化模型
         self._init_model()
@@ -133,6 +135,7 @@ class LLMService:
         try:
             from langfuse.langchain import CallbackHandler
 
+            self._langfuse_handler_cls = CallbackHandler
             self._langfuse_handler = CallbackHandler()
             logger.info("Langfuse callback handler initialized")
         except Exception as e:
@@ -242,6 +245,10 @@ class LLMService:
         prompt: str,
         system_prompt: Optional[str] = None,
         history: Optional[List[Dict[str, str]]] = None,
+        trace_node: Optional[str] = None,
+        trace_run_name: Optional[str] = None,
+        trace_tags: Optional[List[str]] = None,
+        trace_metadata: Optional[Dict[str, Any]] = None,
         **kwargs
     ) -> LLMCallResult:
         """
@@ -251,6 +258,10 @@ class LLMService:
             prompt: 用户提示
             system_prompt: 系统提示（可选）
             history: 对话历史（可选），格式：[{"role": "user/assistant", "content": "消息内容"}]
+            trace_node: 业务节点名，用于 LangChain/Langfuse run 命名
+            trace_run_name: 完整 run 名称（可选，通常不需要）
+            trace_tags: 额外追踪标签
+            trace_metadata: 额外追踪元数据
             **kwargs: 额外参数
             
         Returns:
@@ -278,7 +289,14 @@ class LLMService:
             messages.append(HumanMessage(content=prompt))
             
             # 调用模型（带重试）
-            response = await self._invoke_with_retry(messages, **kwargs)
+            response = await self._invoke_with_retry(
+                messages,
+                trace_node=trace_node,
+                trace_run_name=trace_run_name,
+                trace_tags=trace_tags,
+                trace_metadata=trace_metadata,
+                **kwargs,
+            )
             
             # 记录结果
             latency = (datetime.now() - start_time).total_seconds() * 1000
@@ -310,6 +328,10 @@ class LLMService:
         template_name: str,
         variables: Dict[str, Any],
         history: Optional[List[Dict[str, str]]] = None,
+        trace_node: Optional[str] = None,
+        trace_run_name: Optional[str] = None,
+        trace_tags: Optional[List[str]] = None,
+        trace_metadata: Optional[Dict[str, Any]] = None,
         **kwargs
     ) -> LLMCallResult:
         """
@@ -319,6 +341,10 @@ class LLMService:
             template_name: 模板名称
             variables: 模板变量
             history: 对话历史（可选），格式：[{"role": "user/assistant", "content": "消息内容"}]
+            trace_node: 业务节点名，用于 LangChain/Langfuse run 命名
+            trace_run_name: 完整 run 名称（可选，通常不需要）
+            trace_tags: 额外追踪标签
+            trace_metadata: 额外追踪元数据
             **kwargs: 额外参数
             
         Returns:
@@ -336,6 +362,13 @@ class LLMService:
             prompt=prompt,
             system_prompt=template.system_prompt,
             history=history,
+            trace_node=trace_node or template_name,
+            trace_run_name=trace_run_name,
+            trace_tags=trace_tags,
+            trace_metadata={
+                "template_name": template_name,
+                **(trace_metadata or {}),
+            },
             **kwargs
         )
     
@@ -344,6 +377,10 @@ class LLMService:
         template_name: str,
         variables: Dict[str, Any],
         output_model: type[T],
+        trace_node: Optional[str] = None,
+        trace_run_name: Optional[str] = None,
+        trace_tags: Optional[List[str]] = None,
+        trace_metadata: Optional[Dict[str, Any]] = None,
         **kwargs
     ) -> tuple[Optional[T], LLMCallResult]:
         """
@@ -353,6 +390,10 @@ class LLMService:
             template_name: 模板名称
             variables: 模板变量
             output_model: 输出模型类（Pydantic BaseModel）
+            trace_node: 业务节点名，用于 LangChain/Langfuse run 命名
+            trace_run_name: 完整 run 名称（可选，通常不需要）
+            trace_tags: 额外追踪标签
+            trace_metadata: 额外追踪元数据
             **kwargs: 额外参数
             
         Returns:
@@ -384,6 +425,14 @@ class LLMService:
         result = await self.invoke(
             prompt=structured_prompt,
             system_prompt=template.system_prompt,
+            trace_node=trace_node or template_name,
+            trace_run_name=trace_run_name,
+            trace_tags=trace_tags,
+            trace_metadata={
+                "template_name": template_name,
+                "output_model": output_model.__name__,
+                **(trace_metadata or {}),
+            },
             **kwargs
         )
         
@@ -416,6 +465,10 @@ class LLMService:
         self,
         messages: List[BaseMessage],
         max_retries: int = 3,
+        trace_node: Optional[str] = None,
+        trace_run_name: Optional[str] = None,
+        trace_tags: Optional[List[str]] = None,
+        trace_metadata: Optional[Dict[str, Any]] = None,
         **kwargs
     ) -> Any:
         """
@@ -424,21 +477,33 @@ class LLMService:
         Args:
             messages: 消息列表
             max_retries: 最大重试次数
+            trace_node: 业务节点名，用于 LangChain/Langfuse run 命名
+            trace_run_name: 完整 run 名称（可选，通常不需要）
+            trace_tags: 额外追踪标签
+            trace_metadata: 额外追踪元数据
             **kwargs: 额外参数
             
         Returns:
             模型响应
         """
         last_error = None
+        existing_config = kwargs.pop("config", None)
         
         # raise ValueError("Not implemented")
 
         for attempt in range(max_retries):
             try:
                 print(f"正在请求大模型...")
-                config = {}
-                if self._langfuse_handler is not None:
-                    config["callbacks"] = [self._langfuse_handler]
+                langfuse_handler = self._create_langfuse_handler()
+                callbacks = [langfuse_handler] if langfuse_handler is not None else None
+                config = build_llm_config(
+                    callbacks=callbacks,
+                    existing_config=existing_config,
+                    trace_node=trace_node,
+                    trace_run_name=trace_run_name,
+                    trace_tags=trace_tags,
+                    trace_metadata=trace_metadata,
+                )
                 response = await self.model.ainvoke(messages, config=config, **kwargs)
                 print(f"请求完成")
                 return response
@@ -453,6 +518,17 @@ class LLMService:
                 await asyncio.sleep(wait_time)
         
         raise last_error
+
+    def _create_langfuse_handler(self) -> Optional[Any]:
+        """Create a Langfuse callback handler for the current trace context."""
+        if self._langfuse_handler_cls is None:
+            return None
+
+        context = get_observability_context()
+        if context is None:
+            return self._langfuse_handler
+
+        return self._langfuse_handler_cls(trace_context=context.trace_context())
     
     def _extract_token_usage(self, response: Any) -> Dict[str, int]:
         """提取Token使用量"""

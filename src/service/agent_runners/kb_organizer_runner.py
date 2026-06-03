@@ -8,6 +8,7 @@ from src.agents.kb_organizer_agent import KBOrganizerAgent
 from src.config.llm_config import get_default_config
 from src.services.llm_service import LLMService
 from src.services.kb_organization_service import KBOrganizationService
+from src.services.observability import ObservabilityContext, observability_context, observe_step
 from src.storage.file_operations import FileOperations
 from src.storage.markdown_file_manager import MarkdownFileManager
 
@@ -55,16 +56,23 @@ class KBOrganizerRunner(BaseAgentRunner):
         target_path = self._get_kb_path()
 
         try:
-            agent = self._create_agent(target_path)
+            with observability_context(ObservabilityContext(
+                agent="kb_organizer",
+                operation="run",
+                user_id=self.user_id,
+                session_id=self.session_id,
+            )):
+                agent = self._create_agent(target_path)
 
-            # Emit task_started
-            await self.emitter.emit("task_started", {
-                "user_id": self.user_id,
-                "task_count": 7,
-            })
+                # Emit task_started
+                await self.emitter.emit("task_started", {
+                    "user_id": self.user_id,
+                    "task_count": 8,
+                })
 
-            # Run the agent (monolithic call)
-            result = await agent.run(target_path)
+                # Run the agent (monolithic call)
+                with observe_step("run_agent", as_type="agent", input={"target_path": target_path}):
+                    result = await agent.run(target_path)
 
             # Emit progress for each task in the plan (post-hoc)
             if hasattr(result, 'task_plan') and result.task_plan:

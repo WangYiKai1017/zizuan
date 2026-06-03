@@ -170,6 +170,7 @@ class GuidedInitialInterviewController:
                 temperature=0.7,
                 history=conversation_history,
                 response_format={"type": "json_object"},
+                trace_node="guided.generate_next",
             )
             decision = self._parse_decision(llm_result.content, candidate_questions)
         except Exception as e:

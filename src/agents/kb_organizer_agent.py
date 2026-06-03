@@ -16,6 +16,7 @@ from src.models.kb_organizer_state import (
 )
 from src.services.kb_organization_service import KBOrganizationService
 from src.services.llm_service import LLMService
+from src.services.observability import observe_step
 from src.storage.file_operations import FileOperations
 
 logger = logging.getLogger(__name__)
@@ -110,7 +111,12 @@ class KBOrganizerAgent:
             return state.model_dump()
         task = tasks_ip[0]
         try:
-            await self._dispatch(task, state)
+            with observe_step(
+                f"execute.{task.task_type}",
+                as_type="tool",
+                input={"task_id": task.task_id, "task_type": task.task_type},
+            ):
+                await self._dispatch(task, state)
             if task.status == TaskStatus.IN_PROGRESS:
                 task.status = TaskStatus.COMPLETED
             logger.info(f"✓ 任务完成: {task.task_type} - {task.result}")

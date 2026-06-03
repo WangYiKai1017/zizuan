@@ -139,7 +139,8 @@ class ProfileCollectionAgent:
             
             welcome_message = await self.llm_service.invoke(
                 prompt=prompt,
-                temperature=0.7
+                temperature=0.7,
+                trace_node="profile.start",
             )
             welcome_message = welcome_message.content
             
@@ -234,7 +235,8 @@ class ProfileCollectionAgent:
                 prompt=prompt,
                 temperature=0.3,
                 response_format={"type": "json_object"},
-                history=self.conversation_history  # 传递对话历史
+                history=self.conversation_history,  # 传递对话历史
+                trace_node="profile.extract_info",
             )
             result = result.content
 
@@ -456,7 +458,8 @@ class ProfileCollectionAgent:
         question = await self.llm_service.invoke(
             prompt=prompt,
             temperature=0.7,
-            history=self.conversation_history  # 传递对话历史
+            history=self.conversation_history,  # 传递对话历史
+            trace_node="profile.generate_next_question",
         )
         question = question.content
         

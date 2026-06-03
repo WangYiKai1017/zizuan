@@ -5,6 +5,7 @@ from src.service.sse_response import SSEEmitter
 from src.service.session_manager import SessionManager
 from src.agents.interview_session_agent import InterviewSessionAgent
 from src.services.llm_service import get_llm_service
+from src.services.observability import ObservabilityContext, observability_context
 
 
 class InterviewRunner:
@@ -17,16 +18,22 @@ class InterviewRunner:
 
     async def start(self) -> None:
         """Start a new interview session. Emits session_started + agent_message."""
-        # Create InterviewSessionAgent
-        llm_service = get_llm_service()
-        agent = InterviewSessionAgent(user_id=self.user_id, llm_service=llm_service)
+        with observability_context(ObservabilityContext(
+            agent="interview",
+            operation="start",
+            user_id=self.user_id,
+            session_id=self.session_id,
+        )):
+            # Create InterviewSessionAgent
+            llm_service = get_llm_service()
+            agent = InterviewSessionAgent(user_id=self.user_id, llm_service=llm_service)
 
-        # Store in SessionManager
-        session_manager = SessionManager.get_instance()
-        await session_manager.store_agent_instance(self.user_id, agent)
+            # Store in SessionManager
+            session_manager = SessionManager.get_instance()
+            await session_manager.store_agent_instance(self.user_id, agent)
 
-        # Get opening message
-        opening = await agent.start()
+            # Get opening message
+            opening = await agent.start()
 
         # Emit events
         await self.emitter.emit("session_started", {
@@ -58,8 +65,15 @@ class InterviewRunner:
         # Track phase before handling
         phase_before = agent.phase
 
-        # Process message
-        result = await agent.handle_user_input(message, candidate_questions=candidate_questions)
+        with observability_context(ObservabilityContext(
+            agent="interview",
+            operation="message",
+            user_id=self.user_id,
+            session_id=self.session_id,
+            phase=phase_before.value if hasattr(phase_before, 'value') else str(phase_before),
+        )):
+            # Process message
+            result = await agent.handle_user_input(message, candidate_questions=candidate_questions)
 
         phase_after = agent.phase
 
@@ -89,7 +103,14 @@ class InterviewRunner:
         ending_message = ""
         archived = False
         if agent is not None:
-            ending_message = await agent.end_session()
+            with observability_context(ObservabilityContext(
+                agent="interview",
+                operation="end",
+                user_id=self.user_id,
+                session_id=self.session_id,
+                phase=agent.phase.value if hasattr(agent.phase, 'value') else str(agent.phase),
+            )):
+                ending_message = await agent.end_session()
             archived = True
             phase_reached = agent.phase.value if hasattr(agent.phase, 'value') else str(agent.phase)
             total_turns = len(getattr(agent, 'conversation_history', []) or [])

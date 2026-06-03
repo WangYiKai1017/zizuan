@@ -9,6 +9,7 @@ from src.config.llm_config import get_default_config
 from src.services.llm_service import LLMService
 from src.services.biography_file_manager import BiographyFileManager
 from src.services.biography_material_analyzer import BiographyMaterialAnalyzer
+from src.services.observability import ObservabilityContext, observability_context, observe_step
 
 
 class WritingRunner(BaseAgentRunner):
@@ -37,49 +38,57 @@ class WritingRunner(BaseAgentRunner):
         kb_path = self._get_kb_path()
 
         try:
-            agent = self._create_agent(kb_path)
+            with observability_context(ObservabilityContext(
+                agent="biography_writing",
+                operation="run",
+                user_id=self.user_id,
+                session_id=self.session_id,
+            )):
+                agent = self._create_agent(kb_path)
 
-            # Load outline to count confirmed chapters
-            file_manager = BiographyFileManager(kb_path)
-            outline = file_manager.load_outline()
-            chapters_to_write = 0
-            if outline:
-                from src.models.biography_models import ChapterStatus
-                chapters_to_write = sum(
-                    1 for ch in outline.chapters if ch.status == ChapterStatus.CONFIRMED
-                )
+                # Load outline to count confirmed chapters
+                file_manager = BiographyFileManager(kb_path)
+                with observe_step("load_outline", as_type="tool", input={"kb_path": kb_path}):
+                    outline = file_manager.load_outline()
+                chapters_to_write = 0
+                if outline:
+                    from src.models.biography_models import ChapterStatus
+                    chapters_to_write = sum(
+                        1 for ch in outline.chapters if ch.status == ChapterStatus.CONFIRMED
+                    )
 
-            # Emit task_started
-            await self.emitter.emit("task_started", {
-                "user_id": self.user_id,
-                "chapters_to_write": chapters_to_write,
-            })
-
-            if chapters_to_write == 0:
-                await self.emitter.emit("completed", {
-                    "status": "completed",
-                    "message": "没有待写作的章节（需要先确认大纲章节）",
-                    "completed_chapters": [],
+                # Emit task_started
+                await self.emitter.emit("task_started", {
+                    "user_id": self.user_id,
+                    "chapters_to_write": chapters_to_write,
                 })
-                await self.emitter.emit_done("无待写作章节")
-                return
 
-            # Emit loading_tasks
-            confirmed_ids = []
-            if outline:
-                from src.models.biography_models import ChapterStatus
-                confirmed_ids = [
-                    ch.id for ch in outline.chapters if ch.status == ChapterStatus.CONFIRMED
-                ]
+                if chapters_to_write == 0:
+                    await self.emitter.emit("completed", {
+                        "status": "completed",
+                        "message": "没有待写作的章节（需要先确认大纲章节）",
+                        "completed_chapters": [],
+                    })
+                    await self.emitter.emit_done("无待写作章节")
+                    return
 
-            await self.emitter.emit("loading_tasks", {
-                "step": "loading_tasks",
-                "message": "正在加载写作任务...",
-                "chapters": confirmed_ids,
-            })
+                # Emit loading_tasks
+                confirmed_ids = []
+                if outline:
+                    from src.models.biography_models import ChapterStatus
+                    confirmed_ids = [
+                        ch.id for ch in outline.chapters if ch.status == ChapterStatus.CONFIRMED
+                    ]
 
-            # Run agent
-            result = await agent.run(user_id=self.user_id, kb_path=kb_path)
+                await self.emitter.emit("loading_tasks", {
+                    "step": "loading_tasks",
+                    "message": "正在加载写作任务...",
+                    "chapters": confirmed_ids,
+                })
+
+                # Run agent
+                with observe_step("run_agent", as_type="agent", input={"kb_path": kb_path}):
+                    result = await agent.run(user_id=self.user_id, kb_path=kb_path)
 
             # Emit per-chapter results (post-hoc since agent is monolithic)
             if hasattr(result, 'completed_chapters') and result.completed_chapters:

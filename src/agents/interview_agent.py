@@ -7,6 +7,7 @@ import json
 from src.agents.guided_initial_interview_controller import GuidedInitialInterviewController
 from src.services.llm_service import LLMService, get_llm_service
 from src.services.memory_manager import MemoryManager
+from src.services.observability import observe_step
 from src.services.question_generator import QuestionGenerator, QuestionResult
 from src.tools import MemoryCacheTool, KnowledgeQueryTool, MemoryArchiveTool
 from src.models import SessionState, ConversationTurn
@@ -124,7 +125,8 @@ class InterviewAgent:
         # 生成开场白
         opening = await self.llm_service.invoke(
             prompt=self.resume_prompt,
-            temperature=0.7
+            temperature=0.7,
+            trace_node="start",
         )
         opening = opening.content
         
@@ -188,11 +190,17 @@ class InterviewAgent:
                 memory_context = cache_result
             else:
                 # 2) 缓存未命中，查询知识库
-                memory_context = await self.query_tool.query(
-                    user_id=self.user_id,
-                    query=key_info,
-                    max_iterations=7,
-                )
+                with observe_step(
+                    "turn.kb_query",
+                    as_type="tool",
+                    input={"query": key_info},
+                    metadata={"max_iterations": 7},
+                ):
+                    memory_context = await self.query_tool.query(
+                        user_id=self.user_id,
+                        query=key_info,
+                        max_iterations=7,
+                    )
 
                 # 3) 写入缓存供后续复用
                 self.cache_tool.append_cache(
@@ -277,7 +285,8 @@ class InterviewAgent:
             prompt=identification_prompt,
             temperature=0.3,
             response_format={"type": "json_object"},
-            history=self.conversation_history  # 传递对话历史
+            history=self.conversation_history,  # 传递对话历史
+            trace_node="turn.identify_key_information",
         )
         result = result.content
         
@@ -360,7 +369,8 @@ class InterviewAgent:
         ending_message = await self.llm_service.invoke(
             prompt=prompt,
             temperature=0.7,
-            history=self.conversation_history
+            history=self.conversation_history,
+            trace_node="ending.generate_summary",
         )
         ending_message = ending_message.content
 
@@ -406,6 +416,7 @@ class InterviewAgent:
                 prompt=prompt,
                 temperature=0.7,
                 response_format={"type": "json_object"},
+                trace_node="ending.generate_next_session_questions",
             )
             content = result.content
             if isinstance(content, dict):
