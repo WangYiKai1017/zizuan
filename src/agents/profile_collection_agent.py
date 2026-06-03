@@ -31,13 +31,22 @@ class ProfileCollectionAgent:
     - 将对话记录传给MemoryOrganizer
     - 生成用户基础知识库
     """
+    REQUIRED_FIELDS = [
+        "name",
+        "age",
+        "occupation",
+        "family_status",
+        "living_arrangement",
+        "story_expectation",
+    ]
     
     def __init__(
         self,
         user_id: str,
         llm_service: LLMService = None,
         memory_manager: MemoryManager = None,
-        max_duration_minutes: int = 5
+        max_duration_minutes: int = 5,
+        initial_info: Optional[Dict[str, Any]] = None,
     ):
         self.user_id = user_id
         self.llm_service = llm_service or get_llm_service()
@@ -52,12 +61,11 @@ class ProfileCollectionAgent:
         # 会话状态
         self.start_time = datetime.now()
         self.conversation_history: List[Dict] = []
-        self.collected_info: Dict[str, Any] = {}
+        self.collected_info: Dict[str, Any] = self._normalize_fields(initial_info or {})
         self.is_completed = False
         
         # 必填字段
-        self.required_fields = ['name', 'age', 'occupation', 'family_status', 
-                                'living_arrangement', 'story_expectation']
+        self.required_fields = list(self.REQUIRED_FIELDS)
         
         # 加载prompt模板
         self.prompt_templates = self._load_prompt_templates()
@@ -115,22 +123,30 @@ class ProfileCollectionAgent:
     
     async def start(self) -> str:
         """启动初始化流程"""
-        # 加载profile_welcome prompt
-        welcome_prompt = self.prompt_templates.get("profile_welcome", "")
-        
-        # 注入变量
-        prompt = welcome_prompt.replace("{{elderly_title}}", "老人家")
-        prompt = prompt.replace("{{collection_state}}", "INIT_PROFILE")
-        
-        welcome_message = await self.llm_service.invoke(
-            prompt=prompt,
-            temperature=0.7
-        )
-        welcome_message = welcome_message.content
-        
-        # 解析JSON响应
-        welcome_data = self._parse_json_response(welcome_message)
-        message = welcome_data.get("message", welcome_message) if welcome_data else welcome_message
+        if self.collected_info:
+            if self._should_complete():
+                self.is_completed = True
+                message = await self._generate_completion_message()
+            else:
+                message = await self._generate_next_question()
+        else:
+            # 加载profile_welcome prompt
+            welcome_prompt = self.prompt_templates.get("profile_welcome", "")
+            
+            # 注入变量
+            prompt = welcome_prompt.replace("{{elderly_title}}", "老人家")
+            prompt = prompt.replace("{{collection_state}}", "INIT_PROFILE")
+            
+            welcome_message = await self.llm_service.invoke(
+                prompt=prompt,
+                temperature=0.7,
+                trace_node="profile.start",
+            )
+            welcome_message = welcome_message.content
+            
+            # 解析JSON响应
+            welcome_data = self._parse_json_response(welcome_message)
+            message = welcome_data.get("message", welcome_message) if welcome_data else welcome_message
         
         # 记录对话
         self.conversation_history.append({
@@ -165,7 +181,13 @@ class ProfileCollectionAgent:
         # 检查结束条件
         if self._should_complete():
             self.is_completed = True
-            return await self._generate_completion_message()
+            completion_message = await self._generate_completion_message()
+            self.conversation_history.append({
+                "role": "assistant",
+                "content": completion_message,
+                "timestamp": datetime.now().isoformat()
+            })
+            return completion_message
         
         # 生成下一个问题
         next_question = await self._generate_next_question()
@@ -213,7 +235,8 @@ class ProfileCollectionAgent:
                 prompt=prompt,
                 temperature=0.3,
                 response_format={"type": "json_object"},
-                history=self.conversation_history  # 传递对话历史
+                history=self.conversation_history,  # 传递对话历史
+                trace_node="profile.extract_info",
             )
             result = result.content
 
@@ -309,6 +332,9 @@ class ProfileCollectionAgent:
             "名字": "name",
             "高寿": "age",
             "年龄": "age",
+            "性别": "gender",
+            "出生日期": "birth_date",
+            "出生年份": "birth_year",
             "职业": "occupation",
             "工作": "occupation",
             "家庭": "family_status",
@@ -320,6 +346,8 @@ class ProfileCollectionAgent:
             "故事期望": "story_expectation",
             "人生故事": "story_expectation",
             "children": "children_count",
+            "微信ID": "wechat_id",
+            "wechat_id": "wechat_id",
         }
 
         normalized: Dict[str, Any] = {}
@@ -430,7 +458,8 @@ class ProfileCollectionAgent:
         question = await self.llm_service.invoke(
             prompt=prompt,
             temperature=0.7,
-            history=self.conversation_history  # 传递对话历史
+            history=self.conversation_history,  # 传递对话历史
+            trace_node="profile.generate_next_question",
         )
         question = question.content
         

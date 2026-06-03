@@ -1,10 +1,13 @@
 from typing import Optional, Dict, Any, List
 from datetime import datetime
+from pathlib import Path
 import logging
 import json
 
+from src.agents.guided_initial_interview_controller import GuidedInitialInterviewController
 from src.services.llm_service import LLMService, get_llm_service
 from src.services.memory_manager import MemoryManager
+from src.services.observability import observe_step
 from src.services.question_generator import QuestionGenerator, QuestionResult
 from src.tools import MemoryCacheTool, KnowledgeQueryTool, MemoryArchiveTool
 from src.models import SessionState, ConversationTurn
@@ -39,6 +42,9 @@ class InterviewAgent:
         resume_prompt: str = None,
         initial_history: List[Dict] = None,
         address_style: str = "您",
+        knowledge_base_root: str | Path | None = None,
+        guided_resume_summary: str | None = None,
+        guided_controller: GuidedInitialInterviewController = None,
     ):
         self.user_id = user_id
         self.llm_service = llm_service or get_llm_service()
@@ -65,6 +71,11 @@ class InterviewAgent:
 
         # 对被采访者的称呼方式（如“张爷爷”、“李叔叔”、“您”）
         self.address_style: str = address_style or "您"
+
+        self.knowledge_base_root = Path(knowledge_base_root) if knowledge_base_root else (
+            Path(__file__).resolve().parent.parent.parent / "knowledge_base"
+        )
+        self.guided_resume_summary = guided_resume_summary
         
         # 话题追踪
         self.current_topic: Optional[str] = None
@@ -74,6 +85,11 @@ class InterviewAgent:
         
         # 问题生成器
         self.question_generator = QuestionGenerator(llm_service)
+        self.guided_controller = guided_controller or GuidedInitialInterviewController(
+            user_id=self.user_id,
+            llm_service=self.llm_service,
+            knowledge_base_root=self.knowledge_base_root,
+        )
     
     async def start(self) -> str:
         """
@@ -83,6 +99,14 @@ class InterviewAgent:
         如果有resume_prompt，使用它生成开场白
         否则，使用标准开场模板生成开场白
         """
+        guided_opening = self.guided_controller.build_start_message(
+            address_style=self.address_style,
+            resume_summary=self.guided_resume_summary,
+        )
+        if guided_opening:
+            self._record_turn("assistant", guided_opening)
+            return guided_opening
+
         if not self.resume_prompt:
             # 没有resume_prompt时，使用标准开场模板
             self.resume_prompt = """## 角色定义
@@ -101,7 +125,8 @@ class InterviewAgent:
         # 生成开场白
         opening = await self.llm_service.invoke(
             prompt=self.resume_prompt,
-            temperature=0.7
+            temperature=0.7,
+            trace_node="start",
         )
         opening = opening.content
         
@@ -165,11 +190,17 @@ class InterviewAgent:
                 memory_context = cache_result
             else:
                 # 2) 缓存未命中，查询知识库
-                memory_context = await self.query_tool.query(
-                    user_id=self.user_id,
-                    query=key_info,
-                    max_iterations=7,
-                )
+                with observe_step(
+                    "turn.kb_query",
+                    as_type="tool",
+                    input={"query": key_info},
+                    metadata={"max_iterations": 7},
+                ):
+                    memory_context = await self.query_tool.query(
+                        user_id=self.user_id,
+                        query=key_info,
+                        max_iterations=7,
+                    )
 
                 # 3) 写入缓存供后续复用
                 self.cache_tool.append_cache(
@@ -178,18 +209,28 @@ class InterviewAgent:
                     tags=query_tags,
                 )
 
-        # 6. 生成下一个问题
-        result = await self.question_generator.generate_next(
-            user_input=user_input,
-            memory_context=memory_context,
-            conversation_history=self.conversation_history,
-            candidate_questions=candidate_questions,
-            should_switch_topic=should_switch,
-            current_topic=self.current_topic,
-            topic_turn_count=self.topic_turn_count,
-            topic_history=self.topic_history,
-            address_style=self.address_style,
-        )
+        if self.guided_controller.is_active():
+            decision = await self.guided_controller.generate_next(
+                user_input=user_input,
+                memory_context=memory_context,
+                conversation_history=self.conversation_history,
+                candidate_questions=candidate_questions,
+                address_style=self.address_style,
+            )
+            result = decision.result
+        else:
+            # 6. 生成下一个问题
+            result = await self.question_generator.generate_next(
+                user_input=user_input,
+                memory_context=memory_context,
+                conversation_history=self.conversation_history,
+                candidate_questions=candidate_questions,
+                should_switch_topic=should_switch,
+                current_topic=self.current_topic,
+                topic_turn_count=self.topic_turn_count,
+                topic_history=self.topic_history,
+                address_style=self.address_style,
+            )
 
         # 如果LLM决定换话题，更新追踪状态
         if result.topic_switched and result.new_topic:
@@ -244,7 +285,8 @@ class InterviewAgent:
             prompt=identification_prompt,
             temperature=0.3,
             response_format={"type": "json_object"},
-            history=self.conversation_history  # 传递对话历史
+            history=self.conversation_history,  # 传递对话历史
+            trace_node="turn.identify_key_information",
         )
         result = result.content
         
@@ -327,7 +369,8 @@ class InterviewAgent:
         ending_message = await self.llm_service.invoke(
             prompt=prompt,
             temperature=0.7,
-            history=self.conversation_history
+            history=self.conversation_history,
+            trace_node="ending.generate_summary",
         )
         ending_message = ending_message.content
 
@@ -373,6 +416,7 @@ class InterviewAgent:
                 prompt=prompt,
                 temperature=0.7,
                 response_format={"type": "json_object"},
+                trace_node="ending.generate_next_session_questions",
             )
             content = result.content
             if isinstance(content, dict):

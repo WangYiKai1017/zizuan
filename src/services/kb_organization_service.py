@@ -45,6 +45,8 @@ class KBOrganizationService:
         result = await self.llm_service.invoke_with_template(
             "kb_duplicate_detector",
             {"documents_summary": "\n".join(summaries), "category": category},
+            trace_node="merge_duplicates.find_duplicate_groups",
+            trace_metadata={"category": category, "document_count": len(file_paths)},
         )
         if not result.success:
             logger.warning(f"[重复检测] LLM 调用失败: {result.error}")
@@ -97,6 +99,12 @@ class KBOrganizationService:
                 "merge_rules": "1.严禁删除任何细节；2.相同字段取并集；3.冲突字段标注来源；4.保留所有来源记录",
                 "document_template": f"# {{标题}}\n\n> 类别：{category}\n\n## 内容\n\n{{合并内容}}",
             },
+            trace_node="merge_duplicates.merge_documents",
+            trace_metadata={
+                "category": category,
+                "document_count": len(file_paths),
+                "target_path": file_paths[0] if file_paths else "",
+            },
         )
 
         target_path = file_paths[0]
@@ -139,6 +147,8 @@ class KBOrganizationService:
         result = await self.llm_service.invoke_with_template(
             "kb_conflict_detector",
             {"documents_content": "\n".join(doc_parts), "known_facts": ""},
+            trace_node="detect_contradictions.detect_conflicts",
+            trace_metadata={"document_count": len(file_paths)},
         )
         if not result.success:
             logger.warning(f"矛盾检测 LLM 调用失败: {result.error}")
@@ -170,6 +180,11 @@ class KBOrganizationService:
         result = await self.llm_service.invoke_with_template(
             "kb_conflict_resolver",
             {"conflict_description": conflict.description, "evidence_documents": evidence},
+            trace_node="detect_contradictions.resolve_conflict",
+            trace_metadata={
+                "conflict_id": conflict.conflict_id,
+                "conflict_type": conflict.conflict_type,
+            },
         )
         if not result.success:
             return conflict
@@ -330,6 +345,12 @@ class KBOrganizationService:
                         "broken_links": json.dumps(batch, ensure_ascii=False),
                         "available_files": "\n".join(f"- {f}" for f in available_files),
                         "file_contents": "\n".join(file_snippets),
+                    },
+                    trace_node="repair_links.repair_broken_links",
+                    trace_metadata={
+                        "batch_index": i // batch_size + 1,
+                        "batch_size": len(batch),
+                        "broken_link_count": len(broken_links),
                     },
                 )
                 if not result.success:

@@ -139,7 +139,8 @@ class MarkdownFileManager:
 
         Args:
             profile_info: 包含被采访者信息的字典，键如:
-                name, age, occupation, family_status,
+                wechat_id, name, age, gender, birth_date,
+                birth_year, occupation, family_status,
                 living_arrangement, story_expectation,
                 supplementary (补充信息字符串)
 
@@ -149,8 +150,12 @@ class MarkdownFileManager:
         user_md_path = self.base_path / "user.md"
 
         field_labels = {
+            "wechat_id": "微信ID",
             "name": "姓名",
             "age": "年龄",
+            "gender": "性别",
+            "birth_date": "出生日期",
+            "birth_year": "出生年份",
             "occupation": "职业",
             "family_status": "家庭状况",
             "living_arrangement": "居住情况",

@@ -17,6 +17,11 @@ from datetime import datetime
 
 from src.agents.interview_session_agent import InterviewSessionAgent, SessionPhase
 from src.agents.interview_agent import InterviewAgent
+from src.agents.guided_initial_interview_controller import (
+    GUIDED_STATE_FILENAME,
+    GuidedInitialInterviewController,
+)
+from src.agents.profile_collection_agent import ProfileCollectionAgent
 from src.storage.markdown_file_manager import MarkdownFileManager
 from src.tools.memory_cache_tool import MemoryCacheTool
 
@@ -96,13 +101,32 @@ class TestCheckKnowledgeBase:
             assert await agent._check_knowledge_base() is False
 
     @pytest.mark.asyncio
-    async def test_kb_full_structure_with_content(self):
+    async def test_kb_full_structure_with_content_but_incomplete_profile(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             agent = _make_session_agent(tmpdir)
             _create_full_kb_structure(agent.knowledge_base_path)
             # Add an additional md file
             person_file = agent.knowledge_base_path / "people" / "family" / "mom.md"
             person_file.write_text("# 母亲", encoding="utf-8")
+            assert await agent._check_knowledge_base() is False
+
+    @pytest.mark.asyncio
+    async def test_kb_full_structure_with_complete_profile(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            agent = _make_session_agent(tmpdir)
+            _create_full_kb_structure(agent.knowledge_base_path)
+            user_md = agent.knowledge_base_path / "user.md"
+            user_md.write_text(
+                "# 被采访者档案\n\n"
+                "## 基本信息\n"
+                "- 姓名: 张三\n"
+                "- 年龄: 75\n"
+                "- 职业: 退休工人\n"
+                "- 家庭状况: 与妻子同住\n"
+                "- 居住情况: 上海，与老伴同住\n"
+                "- 故事期望: 想记录工作经历\n",
+                encoding="utf-8",
+            )
             assert await agent._check_knowledge_base() is True
 
 
@@ -126,6 +150,12 @@ class TestComputeAddressStyle:
         with tempfile.TemporaryDirectory() as tmpdir:
             agent = _make_session_agent(tmpdir)
             profile = {"name": "李秀英", "age": "80", "family_status": "丈夫健在"}
+            assert agent._compute_address_style(profile) == "李奶奶"
+
+    def test_gender_from_wechat_profile_takes_priority(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            agent = _make_session_agent(tmpdir)
+            profile = {"name": "李秀英", "age": "80", "gender": "女"}
             assert agent._compute_address_style(profile) == "李奶奶"
 
     def test_middle_age_male(self):
@@ -196,8 +226,12 @@ class TestParseUserMd:
             user_md.write_text(
                 "# 被采访者档案\n\n"
                 "## 基本信息\n"
+                "- 微信ID: wx_openid_001\n"
                 "- 姓名: 张三\n"
                 "- 年龄: 75\n"
+                "- 性别: 男\n"
+                "- 出生日期: 1951-02-03\n"
+                "- 出生年份: 1951\n"
                 "- 职业: 退休教师\n"
                 "- 家庭状况: 妻子健在\n"
                 "- 居住情况: 与子女同住\n"
@@ -205,8 +239,12 @@ class TestParseUserMd:
                 encoding="utf-8",
             )
             result = agent._parse_user_md("u1")
+            assert result["wechat_id"] == "wx_openid_001"
             assert result["name"] == "张三"
             assert result["age"] == "75"
+            assert result["gender"] == "男"
+            assert result["birth_date"] == "1951-02-03"
+            assert result["birth_year"] == "1951"
             assert result["occupation"] == "退休教师"
             assert result["family_status"] == "妻子健在"
             assert result["living_arrangement"] == "与子女同住"
@@ -235,6 +273,153 @@ class TestParseUserMd:
             agent = _make_session_agent(tmpdir, user_id="u3")
             result = agent._parse_user_md("u3")
             assert result == {}
+
+
+class TestPrefilledProfileFlow:
+    @pytest.mark.asyncio
+    async def test_start_profile_collection_uses_prefilled_user_md(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            agent = _make_session_agent(tmpdir, user_id="prefill_user")
+            _create_full_kb_structure(agent.knowledge_base_path)
+            (agent.knowledge_base_path / "user.md").write_text(
+                "# 被采访者档案\n\n"
+                "## 基本信息\n"
+                "- 微信ID: wx_openid_abc\n"
+                "- 姓名: 王秀兰\n"
+                "- 年龄: 78\n"
+                "- 性别: 女\n"
+                "- 出生日期: 1948-01-02\n"
+                "- 出生年份: 1948\n",
+                encoding="utf-8",
+            )
+
+            opening = await agent._start_profile_collection()
+
+            assert opening == "mock response"
+            assert agent.phase == SessionPhase.PROFILE_COLLECTION
+            assert agent.profile_agent.collected_info["name"] == "王秀兰"
+            assert agent.profile_agent.collected_info["age"] == "78"
+            assert agent.profile_agent.collected_info["gender"] == "女"
+            assert "name" not in [
+                field for field in ProfileCollectionAgent.REQUIRED_FIELDS
+                if not agent.profile_agent.collected_info.get(field)
+            ]
+
+    @pytest.mark.asyncio
+    async def test_complete_profile_starts_guided_interview(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            agent = _make_session_agent(tmpdir, user_id="guided_user")
+            _create_full_kb_structure(agent.knowledge_base_path)
+            (agent.knowledge_base_path / "user.md").write_text(
+                "# 被采访者档案\n\n"
+                "## 基本信息\n"
+                "- 姓名: 王秀兰\n"
+                "- 年龄: 78\n"
+                "- 性别: 女\n"
+                "- 职业: 退休教师\n"
+                "- 家庭状况: 与老伴同住\n"
+                "- 居住情况: 上海，与老伴同住\n"
+                "- 故事期望: 想记录一生的重要经历\n",
+                encoding="utf-8",
+            )
+            agent.archive_tool = MagicMock()
+            agent.archive_tool.create_user_knowledge_base = AsyncMock(return_value=None)
+            agent.archive_tool.archive_conversation = AsyncMock(return_value=None)
+
+            opening = await agent._start_profile_collection()
+
+            assert agent.phase == SessionPhase.INTERVIEW
+            assert "小时候住的房子" in opening
+            assert (agent.knowledge_base_path / GUIDED_STATE_FILENAME).exists()
+
+
+class TestGuidedInitialInterviewController:
+    def _controller(self, tmpdir: str, llm_content=None) -> GuidedInitialInterviewController:
+        mock_llm = MagicMock()
+        mock_llm.invoke = AsyncMock(return_value=MagicMock(content=llm_content or {
+            "question": "能再讲讲当时的细节吗？",
+            "source": "generated",
+            "candidate_question_id": None,
+            "guided_question_completed": False,
+            "move_to_next_guided_question": False,
+        }))
+        return GuidedInitialInterviewController(
+            user_id="guided_user",
+            llm_service=mock_llm,
+            knowledge_base_root=Path(tmpdir),
+        )
+
+    def test_creates_initial_state(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            controller = self._controller(tmpdir)
+
+            state = controller.ensure_state()
+
+            assert state["guided_completed"] is False
+            assert state["current_question_id"] == "childhood_home"
+            assert (Path(tmpdir) / "guided_user" / GUIDED_STATE_FILENAME).exists()
+
+    def test_rebuilds_malformed_state(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_path = Path(tmpdir) / "guided_user" / GUIDED_STATE_FILENAME
+            state_path.parent.mkdir(parents=True)
+            state_path.write_text("{broken", encoding="utf-8")
+            controller = self._controller(tmpdir)
+
+            state = controller.ensure_state()
+
+            assert state["current_question_id"] == "childhood_home"
+
+    @pytest.mark.asyncio
+    async def test_candidate_question_source_is_preserved(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            controller = self._controller(tmpdir, {
+                "question": "您刚才提到父亲，那他对您影响最大的一件事是什么？",
+                "source": "candidate_question",
+                "candidate_question_id": "debug_q_1",
+                "guided_question_completed": False,
+                "move_to_next_guided_question": False,
+            })
+
+            decision = await controller.generate_next(
+                user_input="父亲常带我去码头。",
+                candidate_questions=[{"id": "debug_q_1", "question": "父亲对您影响最大的事情是什么？"}],
+            )
+
+            assert decision.result.source == "candidate_question"
+            assert decision.result.candidate_question_id == "debug_q_1"
+
+    @pytest.mark.asyncio
+    async def test_moves_to_next_question_when_completed(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            controller = self._controller(tmpdir, {
+                "question": "这个画面很清楚了。那您父母小时候是什么性格？",
+                "source": "generated",
+                "candidate_question_id": None,
+                "guided_question_completed": True,
+                "move_to_next_guided_question": True,
+            })
+
+            await controller.generate_next(user_input="我家老屋窗外有一棵大树。")
+            state = controller.load_state()
+
+            assert "childhood_home" in state["completed_question_ids"]
+            assert state["current_question_id"] == "childhood_parents"
+
+    @pytest.mark.asyncio
+    async def test_advances_after_one_followup(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            controller = self._controller(tmpdir)
+            state = controller.ensure_state()
+            state["current_question_followup_count"] = 1
+            controller.save_state(state)
+
+            decision = await controller.generate_next(user_input="想不起来了。")
+            state = controller.load_state()
+
+            assert "childhood_home" in state["completed_question_ids"]
+            assert state["current_question_id"] == "childhood_parents"
+            assert "父母" in decision.result.question
 
 
 # ============================================================
@@ -633,6 +818,10 @@ class TestUserMdCreationAndUpdate:
             profile = {
                 "name": "张三",
                 "age": "72",
+                "gender": "男",
+                "birth_date": "1954-05-06",
+                "birth_year": "1954",
+                "wechat_id": "wx_openid_001",
                 "occupation": "退休工人",
             }
             path = fm.create_or_update_user_md(profile)
@@ -640,6 +829,9 @@ class TestUserMdCreationAndUpdate:
 
             assert "张三" in content
             assert "72" in content
+            assert "男" in content
+            assert "1954-05-06" in content
+            assert "wx_openid_001" in content
             assert "退休工人" in content
             assert "被采访者档案" in content
 

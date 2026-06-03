@@ -1,6 +1,7 @@
 import pytest
 from unittest.mock import AsyncMock, patch
 from src.services.llm_service import LLMService, LLMCallResult
+from src.services.observability import ObservabilityContext, observability_context
 from src.config.llm_config import LLMConfig
 from src.models import EmotionResult
 
@@ -33,6 +34,38 @@ class TestLLMService:
         assert result.success
         assert result.content == "测试响应"
         assert llm_service._model.ainvoke.called
+
+    @pytest.mark.asyncio
+    async def test_invoke_uses_observability_context(self, llm_service):
+        """测试观测上下文会自动进入 LangChain config"""
+        mock_response = type('obj', (object,), {'content': '测试响应', 'usage_metadata': {}})()
+        llm_service._model.ainvoke = AsyncMock(return_value=mock_response)
+
+        context = ObservabilityContext(
+            agent="interview",
+            operation="start",
+            user_id="user001",
+            session_id="sess_001",
+            trace_id="a" * 32,
+        )
+        with observability_context(context):
+            result = await llm_service.invoke("你好", trace_node="profile.start")
+
+        config = llm_service._model.ainvoke.call_args.kwargs["config"]
+        callback = config["callbacks"][0]
+        assert result.success
+        assert config["run_name"] == "interview.profile.start"
+        assert "interview" in config["tags"]
+        assert "profile" in config["tags"]
+        assert config["metadata"]["user_id"] == "user001"
+        assert config["metadata"]["session_id"] == "sess_001"
+        assert config["metadata"]["node"] == "profile.start"
+        assert config["metadata"]["trace_id"] == "a" * 32
+        assert config["metadata"]["langfuse_session_id"] == "sess_001"
+        assert config["metadata"]["langfuse_user_id"] == "user001"
+        assert config["metadata"]["langfuse_trace_name"] == "interview.start"
+        assert callback._trace_context["trace_id"] == "a" * 32
+        assert "parent_span_id" in callback._trace_context
     
     @pytest.mark.asyncio
     async def test_invoke_with_retry(self, llm_service):
@@ -79,6 +112,8 @@ class TestLLMService:
             assert result.success
             assert result.content == "测试问题"
             mock_invoke.assert_called_once()
+            assert mock_invoke.call_args.kwargs["trace_node"] == "question_generation"
+            assert mock_invoke.call_args.kwargs["trace_metadata"]["template_name"] == "question_generation"
     
     @pytest.mark.asyncio
     async def test_invoke_structured(self, llm_service):

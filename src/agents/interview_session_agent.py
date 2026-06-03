@@ -11,6 +11,7 @@ from src.services.question_generator import QuestionResult
 from src.services.llm_service import LLMService, get_llm_service
 from src.services.memory_manager import MemoryManager
 from src.services.knowledge_base_querier import KnowledgeBaseQuerier
+from src.services.observability import observe_step
 from src.models import SessionState, HandoffPackage
 from src.tools import (
     MemoryCacheTool,
@@ -154,15 +155,9 @@ class InterviewSessionAgent:
                     logger.info(f"Required directory missing or not a directory: {dir_path}")
                     return False
             
-            # 检查是否包含除index.md之外的其他Markdown文件
-            has_other_md_files = False
-            for md_file in self.knowledge_base_path.rglob("*.md"):
-                if md_file.name != "index.md":
-                    has_other_md_files = True
-                    break
-            
-            if not has_other_md_files:
-                logger.info(f"No other Markdown files found except index.md in: {self.knowledge_base_path}")
+            profile_info = self._parse_user_md(self.user_id)
+            if not self._is_profile_complete(profile_info):
+                logger.info(f"Profile is incomplete for user: {self.user_id}")
                 return False
             
             logger.info(f"Knowledge base structure is complete for user: {self.user_id}")
@@ -222,7 +217,8 @@ class InterviewSessionAgent:
         query_prompt = self._build_resume_analysis_prompt(history)
         analysis_result = await self.llm_service.invoke(
             prompt=query_prompt,
-            temperature=0.3
+            temperature=0.3,
+            trace_node="resume.analyze_needed_knowledge",
         )
         analysis_result = analysis_result.content
         
@@ -232,11 +228,17 @@ class InterviewSessionAgent:
             logger.info(f"重复查询请求，已跳过：{analysis_result[:50]}...")
             knowledge_context = ""
         else:
-            knowledge_context = await self.query_tool.query(
-                user_id=self.user_id,
-                query=analysis_result,
-                max_iterations=5
-            )
+            with observe_step(
+                "resume.kb_query",
+                as_type="tool",
+                input={"query": analysis_result},
+                metadata={"max_iterations": 5},
+            ):
+                knowledge_context = await self.query_tool.query(
+                    user_id=self.user_id,
+                    query=analysis_result,
+                    max_iterations=5
+                )
             self.current_round_queries.add(query_hash)  # 记录已查询的请求
         
         # 4. 缓存知识库查询结果
@@ -263,6 +265,8 @@ class InterviewSessionAgent:
             resume_prompt=resume_prompt,
             initial_history=history,
             address_style=self.address_style,
+            knowledge_base_root=self.knowledge_base_root,
+            guided_resume_summary=prev_context.get("summary"),
         )
 
         # 6.1 将上次的话题历史与当前话题方向注入 InterviewAgent
@@ -380,17 +384,22 @@ class InterviewSessionAgent:
         4. 将对话记录传递给采访流程
         """
         self.phase = SessionPhase.PROFILE_COLLECTION
+
+        prefilled_profile = self._parse_user_md(self.user_id)
         
         # 创建初始化Agent（不使用时间限制，仅依赖必填字段检查）
         self.profile_agent = ProfileCollectionAgent(
             user_id=self.user_id,
             llm_service=self.llm_service,
             memory_manager=self.memory_manager,
-            max_duration_minutes=10**9
+            max_duration_minutes=10**9,
+            initial_info=prefilled_profile,
         )
         
         # 执行初始化流程
         welcome_message = await self.profile_agent.start()
+        if self.profile_agent.is_completed:
+            return await self._on_profile_complete()
         
         # 注意：初始化Agent会持续运行，直到所有必填字段收集完成
         # 完成后会触发 _on_profile_complete
@@ -426,7 +435,7 @@ class InterviewSessionAgent:
 
         # 检查是否完成初始化
         if self.profile_agent.is_completed:
-            await self._on_profile_complete()
+            response = await self._on_profile_complete()
 
         return QuestionResult(
             question=response,
@@ -434,7 +443,7 @@ class InterviewSessionAgent:
             candidate_question_id=None,
         )
     
-    async def _on_profile_complete(self):
+    async def _on_profile_complete(self) -> str:
         """
         初始化完成后的处理
         
@@ -449,18 +458,20 @@ class InterviewSessionAgent:
         self.conversation_history.extend(profile_history)
         
         # 2. 生成基础知识库
-        await self.archive_tool.create_user_knowledge_base(
-            user_id=self.user_id,
-            conversation_history=profile_history,
-            profile_info=self.profile_agent.collected_info
-        )
+        with observe_step("profile.create_user_knowledge_base", as_type="tool"):
+            await self.archive_tool.create_user_knowledge_base(
+                user_id=self.user_id,
+                conversation_history=profile_history,
+                profile_info=self.profile_agent.collected_info
+            )
 
         # 2.1 将当前内容归档
-        await self.archive_tool.archive_conversation(
-            user_id=self.user_id,
-            conversation_history=profile_history,
-            session_summary="用户初始化对话存档"
-        )
+        with observe_step("profile.archive_conversation", as_type="tool"):
+            await self.archive_tool.archive_conversation(
+                user_id=self.user_id,
+                conversation_history=profile_history,
+                session_summary="用户初始化对话存档"
+            )
         
         # 3. 标记已初始化
         self.has_profile = True
@@ -479,9 +490,12 @@ class InterviewSessionAgent:
             archive_tool=self.archive_tool,
             initial_history=profile_history,
             address_style=self.address_style,
+            knowledge_base_root=self.knowledge_base_root,
         )
+        self.interview_agent.guided_controller.ensure_state()
         
         self.phase = SessionPhase.INTERVIEW
+        return await self.interview_agent.start()
     
     async def _handle_interview_input(
         self,
@@ -557,11 +571,12 @@ class InterviewSessionAgent:
         summary = self._sanitize_archive_text(summary)
 
         # 先归档对话记录，让 session 归档可以引用本次结构化提取结果。
-        organized_memory = await self.archive_tool.archive_conversation(
-            user_id=self.user_id,
-            conversation_history=self.conversation_history,
-            session_summary=self.interview_agent.session_summary
-        )
+        with observe_step("ending.archive_conversation", as_type="tool"):
+            organized_memory = await self.archive_tool.archive_conversation(
+                user_id=self.user_id,
+                conversation_history=self.conversation_history,
+                session_summary=self.interview_agent.session_summary
+            )
 
         events, people, timepoints = self._format_session_archive_items(organized_memory)
 
@@ -583,7 +598,8 @@ class InterviewSessionAgent:
         }
 
         # 创建采访记录归档
-        await self.archive_tool.create_session_archive(self.user_id, session_data)
+        with observe_step("ending.create_session_archive", as_type="tool"):
+            await self.archive_tool.create_session_archive(self.user_id, session_data)
         
         self.phase = SessionPhase.CLOSED
         return ending_message
@@ -667,16 +683,18 @@ class InterviewSessionAgent:
         if self.profile_agent:
             profile_history = self.profile_agent.get_conversation_history()
             self.conversation_history = list(profile_history)
-            await self.archive_tool.create_user_knowledge_base(
-                user_id=self.user_id,
-                conversation_history=profile_history,
-                profile_info=self.profile_agent.collected_info
-            )
-            await self.archive_tool.archive_conversation(
-                user_id=self.user_id,
-                conversation_history=profile_history,
-                session_summary="用户初始化对话结束归档"
-            )
+            with observe_step("profile.create_user_knowledge_base", as_type="tool"):
+                await self.archive_tool.create_user_knowledge_base(
+                    user_id=self.user_id,
+                    conversation_history=profile_history,
+                    profile_info=self.profile_agent.collected_info
+                )
+            with observe_step("profile.archive_conversation", as_type="tool"):
+                await self.archive_tool.archive_conversation(
+                    user_id=self.user_id,
+                    conversation_history=profile_history,
+                    session_summary="用户初始化对话结束归档"
+                )
             self.phase = SessionPhase.CLOSED
             return "今天的采访就到这里啦，非常感谢您的分享。期待下次再聊！"
 
@@ -823,8 +841,12 @@ class InterviewSessionAgent:
             return {}
 
         key_map = {
+            "微信ID": "wechat_id",
             "姓名": "name",
             "年龄": "age",
+            "性别": "gender",
+            "出生日期": "birth_date",
+            "出生年份": "birth_year",
             "职业": "occupation",
             "家庭状况": "family_status",
             "居住情况": "living_arrangement",
@@ -843,6 +865,15 @@ class InterviewSessionAgent:
                 profile[key_map[cn_key]] = value
         return profile
 
+    def _is_profile_complete(self, profile_info: dict) -> bool:
+        """Return whether user.md has enough fields to skip profile collection."""
+        if not isinstance(profile_info, dict):
+            return False
+        return all(
+            profile_info.get(field)
+            for field in ProfileCollectionAgent.REQUIRED_FIELDS
+        )
+
     def _compute_address_style(self, profile_info: dict) -> str:
         """根据被采访者的年龄、姓名、性别提示计算称呼方式。
 
@@ -860,6 +891,7 @@ class InterviewSessionAgent:
         name = profile_info.get("name")
         age_value = profile_info.get("age")
         family_status = profile_info.get("family_status") or ""
+        gender_value = str(profile_info.get("gender") or "").strip().lower()
 
         # 解析年龄
         if age_value is None or age_value == "":
@@ -880,10 +912,13 @@ class InterviewSessionAgent:
             return "您"
         surname = surname[0]
 
-        # 性别推断：family_status 中出现“丈夫/老公”默认为女性；
-        # 出现“妻子/老婆/夫人”默认为男性。
+        # 优先使用外部画像提供的性别；缺失时再从 family_status 保守推断。
         gender: Optional[str] = None
-        if any(token in family_status for token in ["丈夫", "老公"]):
+        if gender_value in {"女", "女性", "female", "f", "woman"}:
+            gender = "female"
+        elif gender_value in {"男", "男性", "male", "m", "man"}:
+            gender = "male"
+        elif any(token in family_status for token in ["丈夫", "老公"]):
             gender = "female"
         elif any(token in family_status for token in ["妻子", "老婆", "夫人"]):
             gender = "male"

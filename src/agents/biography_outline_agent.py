@@ -21,6 +21,7 @@ from src.models.biography_outline_state import OutlineAgentState
 from src.services.biography_file_manager import BiographyFileManager
 from src.services.biography_material_analyzer import BiographyMaterialAnalyzer
 from src.services.llm_service import LLMService
+from src.services.observability import observe_step
 
 logger = logging.getLogger(__name__)
 
@@ -94,7 +95,8 @@ class BiographyOutlineAgent:
         logger.info(f"[scan_kb] 检测到 {len(changed_files)} 个新增/变更文件")
 
         # Parse all materials
-        result = self.material_analyzer.scan_and_parse_all()
+        with observe_step("scan_kb.scan_and_parse_materials", as_type="tool"):
+            result = self.material_analyzer.scan_and_parse_all()
 
         # Load existing outline if any
         current_outline = self.file_manager.load_outline()
@@ -135,6 +137,7 @@ class BiographyOutlineAgent:
                 "materials_content": state.raw_materials_text,
                 "existing_themes": existing_themes,
             },
+            trace_node="analyze_materials",
         )
 
         if not result.success:
@@ -179,6 +182,7 @@ class BiographyOutlineAgent:
                 "existing_outline": existing_outline_text,
                 "available_materials": available_materials,
             },
+            trace_node="generate_outline",
         )
 
         if not result.success:
@@ -421,21 +425,24 @@ class BiographyOutlineAgent:
                 )
 
         # Save outline.yaml
-        self.file_manager.save_outline(final_outline)
+        with observe_step(
+            "diff_and_update.save_outline",
+            as_type="tool",
+            metadata={"chapter_count": len(final_outline.chapters)},
+        ):
+            self.file_manager.save_outline(final_outline)
+            new_state = BiographyState(
+                last_outline_run=datetime.now(),
+                kb_content_hash=self.file_manager.compute_kb_hash(),
+                processed_files=self.file_manager.scan_kb_files(),
+                chapter_versions={
+                    ch.id: final_outline.version for ch in final_outline.chapters
+                },
+            )
+            self.file_manager.save_state(new_state)
         logger.info(
             f"[diff_and_update] 已保存大纲，共 {len(final_outline.chapters)} 章"
         )
-
-        # Update .state.json
-        new_state = BiographyState(
-            last_outline_run=datetime.now(),
-            kb_content_hash=self.file_manager.compute_kb_hash(),
-            processed_files=self.file_manager.scan_kb_files(),
-            chapter_versions={
-                ch.id: final_outline.version for ch in final_outline.chapters
-            },
-        )
-        self.file_manager.save_state(new_state)
 
         return {
             "final_outline": final_outline,

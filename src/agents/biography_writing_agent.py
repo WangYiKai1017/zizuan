@@ -18,6 +18,7 @@ from src.models.biography_writing_state import WritingAgentState
 from src.services.biography_file_manager import BiographyFileManager
 from src.services.biography_material_analyzer import BiographyMaterialAnalyzer
 from src.services.llm_service import LLMService
+from src.services.observability import observe_step
 
 logger = logging.getLogger(__name__)
 
@@ -61,7 +62,8 @@ class BiographyWritingAgent:
         """
         logger.info("=== [load_tasks] 加载写作任务 ===")
 
-        outline = self.file_manager.load_outline()
+        with observe_step("load_tasks.load_outline", as_type="tool"):
+            outline = self.file_manager.load_outline()
         if not outline:
             logger.warning("[load_tasks] 未找到大纲文件 outline.yaml")
             return {
@@ -122,10 +124,19 @@ class BiographyWritingAgent:
         )
 
         # Use material_analyzer to gather all needed content
-        materials = self.material_analyzer.gather_chapter_materials(
-            source_materials=chapter.source_materials,
-            life_stage=chapter.life_stage,
-        )
+        with observe_step(
+            "gather_materials.read_sources",
+            as_type="tool",
+            metadata={
+                "chapter_id": chapter.chapter_id,
+                "source_count": len(chapter.source_materials),
+                "life_stage": chapter.life_stage,
+            },
+        ):
+            materials = self.material_analyzer.gather_chapter_materials(
+                source_materials=chapter.source_materials,
+                life_stage=chapter.life_stage,
+            )
 
         logger.info(f"[gather_materials] 源材料: {len(materials['source_content'])} 字符")
         logger.info(f"[gather_materials] 人物档案: {len(materials['character_profiles'])} 字符")
@@ -145,12 +156,16 @@ class BiographyWritingAgent:
         chapter = state.current_chapter
         logger.info(f"=== [write_chapter] 撰写章节: {chapter.chapter_title} ===")
 
-        draft = self._build_grounded_chapter_content(
-            title=chapter.chapter_title,
-            theme=chapter.theme,
-            source_content=state.source_content,
-            character_profiles=state.character_profiles,
-        )
+        with observe_step(
+            "write_chapter.build_grounded_draft",
+            metadata={"chapter_id": chapter.chapter_id, "chapter_title": chapter.chapter_title},
+        ):
+            draft = self._build_grounded_chapter_content(
+                title=chapter.chapter_title,
+                theme=chapter.theme,
+                source_content=state.source_content,
+                character_profiles=state.character_profiles,
+            )
         logger.info(f"[write_chapter] 初稿生成完成，{len(draft)} 字符")
 
         return {"draft_content": draft}
@@ -170,19 +185,22 @@ class BiographyWritingAgent:
         final_content = state.draft_content
 
         # Save chapter file
-        saved_path = self.file_manager.save_chapter(
-            chapter_id=chapter.chapter_id,
-            title=chapter.chapter_title,
-            content=final_content,
-        )
+        with observe_step(
+            "review_and_save.save_chapter",
+            as_type="tool",
+            metadata={"chapter_id": chapter.chapter_id, "chapter_title": chapter.chapter_title},
+        ):
+            saved_path = self.file_manager.save_chapter(
+                chapter_id=chapter.chapter_id,
+                title=chapter.chapter_title,
+                content=final_content,
+            )
+            self.file_manager.update_chapter_status(
+                chapter_id=chapter.chapter_id,
+                status=ChapterStatus.WRITTEN,
+                timestamp_field="written_at",
+            )
         logger.info(f"[review_and_save] 章节已保存: {saved_path}")
-
-        # Update outline.yaml status
-        self.file_manager.update_chapter_status(
-            chapter_id=chapter.chapter_id,
-            status=ChapterStatus.WRITTEN,
-            timestamp_field="written_at",
-        )
 
         # Advance to next chapter
         completed = state.completed_chapters + [chapter.chapter_id]
@@ -328,7 +346,12 @@ class BiographyWritingAgent:
 
         outline = self.file_manager.load_outline()
         if outline:
-            merged_path = self.file_manager.merge_chapters_to_full(outline)
+            with observe_step(
+                "merge_biography.merge_chapters_to_full",
+                as_type="tool",
+                metadata={"chapter_count": len(outline.chapters)},
+            ):
+                merged_path = self.file_manager.merge_chapters_to_full(outline)
             logger.info(f"[merge_biography] 完整传记已生成: {merged_path}")
         else:
             logger.warning("[merge_biography] 无法加载大纲，跳过合并")

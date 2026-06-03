@@ -8,6 +8,7 @@ from src.config.llm_config import get_default_config
 from src.services.llm_service import LLMService
 from src.services.biography_file_manager import BiographyFileManager
 from src.services.biography_material_analyzer import BiographyMaterialAnalyzer
+from src.services.observability import ObservabilityContext, observability_context, observe_step
 
 
 class OutlineRunner(BaseAgentRunner):
@@ -36,22 +37,29 @@ class OutlineRunner(BaseAgentRunner):
         kb_path = self._get_kb_path()
 
         try:
-            agent = self._create_agent(kb_path)
+            with observability_context(ObservabilityContext(
+                agent="biography_outline",
+                operation="generate",
+                user_id=self.user_id,
+                session_id=self.session_id,
+            )):
+                agent = self._create_agent(kb_path)
 
-            # Emit task_started
-            await self.emitter.emit("task_started", {
-                "user_id": self.user_id,
-                "mode": "generate",
-            })
+                # Emit task_started
+                await self.emitter.emit("task_started", {
+                    "user_id": self.user_id,
+                    "mode": "generate",
+                })
 
-            # Emit scanning
-            await self.emitter.emit("scanning", {
-                "step": "scanning",
-                "message": "正在扫描知识库材料...",
-            })
+                # Emit scanning
+                await self.emitter.emit("scanning", {
+                    "step": "scanning",
+                    "message": "正在扫描知识库材料...",
+                })
 
-            # Run agent
-            result = await agent.run(user_id=self.user_id, kb_path=kb_path)
+                # Run agent
+                with observe_step("run_agent", as_type="agent", input={"kb_path": kb_path}):
+                    result = await agent.run(user_id=self.user_id, kb_path=kb_path)
 
             # Check if no changes
             if hasattr(result, 'has_changes') and not result.has_changes:
