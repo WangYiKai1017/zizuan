@@ -76,29 +76,61 @@ def sse_iter(
         the same parser works regardless of which separator the server
         (or any intermediary proxy) emits.
     """
-    # Force utf-8 so iter_content(decode_unicode=True) works correctly
+    # Force utf-8 so iter_lines(decode_unicode=True) works correctly
     response.encoding = "utf-8"
-    buf = ""
+    event_name: Optional[str] = None
+    data_lines: list[str] = []
 
-    for chunk in response.iter_content(chunk_size=1, decode_unicode=True):
-        if chunk is None or chunk == "":
+    for line in response.iter_lines(decode_unicode=True):
+        if line is None:
             continue
-        # Normalize CRLF -> LF as we accumulate so the delimiter check
-        # works whether the server uses "\n\n" or "\r\n\r\n".
-        buf += chunk.replace("\r\n", "\n").replace("\r", "\n")
+        line = line.decode("utf-8") if isinstance(line, bytes) else line
 
-        # Process all complete event blocks (delimited by blank line)
-        while "\n\n" in buf:
-            block, buf = buf.split("\n\n", 1)
-            result = _parse_sse_block(block)
-            if result is not None:
-                yield result
+        if line.startswith(":"):
+            # comment / heartbeat — ignore
+            continue
+        if line.startswith("event:"):
+            event_name = line[len("event:"):].strip()
+            continue
+        if line.startswith("data:"):
+            value = line[len("data:"):]
+            if value.startswith(" "):
+                value = value[1:]
+            data_lines.append(value)
+            continue
+        if line.startswith("id:") or line.startswith("retry:"):
+            continue
 
-    # Flush remaining buffer (stream closed without trailing blank line)
-    if buf.strip():
-        result = _parse_sse_block(buf)
-        if result is not None:
-            yield result
+        if line == "":
+            # blank line terminates the event block
+            if event_name is not None or data_lines:
+                data_str = "\n".join(data_lines)
+                if data_str:
+                    try:
+                        data_obj = json.loads(data_str)
+                        if not isinstance(data_obj, dict):
+                            data_obj = {"raw": data_obj}
+                    except (json.JSONDecodeError, ValueError):
+                        data_obj = {"raw": data_str}
+                else:
+                    data_obj = {}
+                yield (event_name or "message", data_obj)
+            event_name = None
+            data_lines = []
+
+    # Flush any partial event when the stream closes
+    if event_name is not None or data_lines:
+        data_str = "\n".join(data_lines)
+        if data_str:
+            try:
+                data_obj = json.loads(data_str)
+                if not isinstance(data_obj, dict):
+                    data_obj = {"raw": data_obj}
+            except (json.JSONDecodeError, ValueError):
+                data_obj = {"raw": data_str}
+        else:
+            data_obj = {}
+        yield (event_name or "message", data_obj)
 
 
 def _parse_sse_block(block: str) -> Optional[Tuple[str, Dict[str, Any]]]:

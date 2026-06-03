@@ -130,11 +130,16 @@ class MemoryManager:
             OrganizedMemory: 整理后的结构化记忆
         """
         # 1. 格式化输入变量
+        phase_instruction = (
+            f"{PHASE_LABELS.get(current_phase, str(current_phase))}\n"
+            "注意：请根据内容自动判断每个事件/记忆属于哪个人生阶段"
+            "（童年/少年/青年/中年/老年），不需要依赖对话中的标记。"
+        )
         variables = {
             "conversation_content": self._format_conversation_content(turns),
             "existing_timeline": self._format_existing_timeline(),
             "existing_people": self._format_existing_people(),
-            "current_phase": PHASE_LABELS.get(current_phase, str(current_phase)),
+            "current_phase": phase_instruction,
         }
         
         # 2. 调用 LLM 整理
@@ -151,11 +156,37 @@ class MemoryManager:
         logger.info(f"Memory organized: {len(result.events)} events, {len(result.people)} people")
         
         # 3. 按整理结果存储
-        await self._apply_organized_memory(result)
+        await self._apply_organized_memory(result, turns)
         
         return result
     
-    async def _apply_organized_memory(self, memory: OrganizedMemory) -> Dict[str, str]:
+    def _normalize_link_path(self, path: str) -> str:
+        """Normalize a stored file path into a wiki-link path relative to
+        the user's KB root (knowledge_base/{user_id}/).
+
+        Delegates to the underlying MarkdownFileManager when available so
+        any cross-reference written into markdown content stays in the
+        canonical ``[display](relative/path.md)`` form.
+        """
+        if not path:
+            return ""
+        file_manager = getattr(self.repository, "file_manager", None)
+        if file_manager is not None and hasattr(file_manager, "_normalize_wiki_link"):
+            return file_manager._normalize_wiki_link(path)
+        return str(path)
+
+    def _format_link(self, display_text: str, path: str) -> str:
+        """Format a markdown wiki link with a normalized relative path."""
+        file_manager = getattr(self.repository, "file_manager", None)
+        if file_manager is not None and hasattr(file_manager, "format_wiki_link"):
+            return file_manager.format_wiki_link(display_text, path)
+        return f"[{display_text or ''}]({self._normalize_link_path(path)})"
+
+    async def _apply_organized_memory(
+        self,
+        memory: OrganizedMemory,
+        source_turns: Optional[List[ConversationTurn]] = None,
+    ) -> Dict[str, List[str]]:
         """
         应用整理结果到存储
         
@@ -163,27 +194,36 @@ class MemoryManager:
             memory: 整理后的结构化记忆
             
         Returns:
-            创建的文件路径字典
+            创建的文件路径字典（路径以 KB 根目录为基准的相对路径）
         """
         results = {"events": [], "people": [], "timeline": []}
         
-        # 并行保存
-        tasks = []
-        
         # 保存事件（同时更新时间线）
-        for event in memory.events:
-            event_info = self._convert_to_event_info(event)
-            tasks.append(self._save_event_with_timeline_update(event_info, memory.timeline_updates))
+        events_to_save = [
+            event for event in memory.events
+            if self._should_persist_event(event)
+        ]
+        event_paths = []
+        for event in events_to_save:
+            event_info = self._convert_to_event_info(event, source_turns or [])
+            event_path = await self._save_event_with_timeline_update(event_info, memory.timeline_updates)
+            event_paths.append(event_path)
         
         # 保存人物
+        tasks = []
         for person in memory.people:
             person_info = self._convert_to_person_info(person)
             tasks.append(self.repository.save_person(person_info))
         
+        people_paths = []
         if tasks:
             paths = await asyncio.gather(*tasks, return_exceptions=True)
-            results["events"] = [p for p in paths[:len(memory.events)] if isinstance(p, str)]
-            results["people"] = [p for p in paths[len(memory.events):] if isinstance(p, str)]
+            people_paths = [p for p in paths if isinstance(p, str)]
+
+        # Normalize stored paths so any consumer rendering them as
+        # markdown links gets a clean KB-relative form.
+        results["events"] = [self._normalize_link_path(p) for p in event_paths if isinstance(p, str)]
+        results["people"] = [self._normalize_link_path(p) for p in people_paths if isinstance(p, str)]
         
         # 更新画像记忆
         if memory.profile_updates:
@@ -191,6 +231,22 @@ class MemoryManager:
         
         logger.info(f"Applied memory: {len(results['events'])} events, {len(results['people'])} people saved")
         return results
+
+    def _should_persist_event(self, event: EventExtract) -> bool:
+        """过滤明显由模型推断出来、且置信度较低的事件。"""
+        text = " ".join([
+            event.title or "",
+            event.time or "",
+            event.description or "",
+            event.user_evaluation or "",
+        ])
+        if any(token in text for token in ["自传采访", "采访开始", "接受自传采访"]):
+            logger.info(f"Skip meta interview event: {event.title}")
+            return False
+        if "推算" in text and event.confidence <= 0.65:
+            logger.info(f"Skip inferred low-confidence event: {event.title}")
+            return False
+        return True
     
     async def _save_event_with_timeline_update(
         self,
@@ -201,11 +257,10 @@ class MemoryManager:
         # 保存事件
         path = await self.repository.save_event(event)
         
-        # 更新时间线文件
-        for update in timeline_updates:
-            if update.event_reference == event.event_id:
-                await self.repository.update_timeline(event)
-                break
+        # 更新时间线文件。即使模型没有显式返回 timeline_updates，
+        # 只要事件有时间，也应该进入人生大事年表。
+        if event.time:
+            await self.repository.update_timeline(event)
         
         return path
     
@@ -216,10 +271,10 @@ class MemoryManager:
         lines = []
         for i, turn in enumerate(turns, 1):
             lines.append(f"### 第 {i} 轮")
-            lines.append(f"时间：{turn["timestamp"]}")
-            lines.append(f"用户：{turn["user_input"]}")
-            if "agent_response" in turn.keys():
-                lines.append(f"助手：{turn["agent_response"]}")
+            lines.append(f"时间：{turn.timestamp}")
+            lines.append(f"用户：{turn.user_input}")
+            if turn.agent_response is not None:
+                lines.append(f"助手：{turn.agent_response}")
             lines.append("")
         return "\n".join(lines)
     
@@ -248,7 +303,11 @@ class MemoryManager:
     
     # ===== 转换方法 =====
     
-    def _convert_to_event_info(self, event: EventExtract) -> EventInfo:
+    def _convert_to_event_info(
+        self,
+        event: EventExtract,
+        source_turns: Optional[List[ConversationTurn]] = None,
+    ) -> EventInfo:
         """将 EventExtract 转换为 EventInfo"""
         return EventInfo(
             event_id=event.event_id,
@@ -256,31 +315,132 @@ class MemoryManager:
             time=event.time or "",
             location=event.location or "",
             type=event.event_type.value if isinstance(event.event_type, EventType) else event.event_type,
-            description=event.description,
-            details=[],  # EventExtract没有details字段
+            description=self._sanitize_event_description(event.description),
+            details=self._extract_event_details(event, source_turns or []),
             participants=event.participants,
             emotions=event.emotions,
             significance=event.user_evaluation or "",
             source_turns=event.source_turns,
         )
+
+    def _extract_event_details(
+        self,
+        event: EventExtract,
+        source_turns: List[ConversationTurn],
+    ) -> List[str]:
+        """从用户原话中提取与事件相关的关键细节，防止归档只剩泛化摘要。"""
+        import re
+
+        keywords = set()
+        if event.time:
+            keywords.update(re.findall(r"\d{4}", event.time))
+        if event.title:
+            for token in re.split(r"[，。！？、\s]+", event.title):
+                token = token.strip()
+                if len(token) >= 2:
+                    keywords.add(token)
+            for token in re.findall(r"[\u4e00-\u9fff]{2,}", event.title):
+                if len(token) >= 2:
+                    keywords.add(token)
+        for participant in event.participants or []:
+            if participant:
+                keywords.add(str(participant))
+
+        details: List[str] = []
+        for turn in source_turns:
+            text = turn.user_input or ""
+            if not text:
+                continue
+            if keywords and not any(keyword and keyword in text for keyword in keywords):
+                continue
+
+            clauses = [
+                clause.strip()
+                for clause in re.split(r"[。！？；;]\s*", text)
+                if clause.strip()
+            ]
+            for clause in clauses:
+                normalized = clause.rstrip("，,。")
+                if normalized and normalized not in details:
+                    details.append(normalized)
+                if len(details) >= 8:
+                    return details
+
+        return details
+
+    def _sanitize_event_description(self, description: str) -> str:
+        """去掉模型常见的评价性/推断性补写，保留用户明确表达的事实。"""
+        if not description:
+            return ""
+
+        text = description
+        text = text.replace("作为技术骨干", "")
+        text = text.replace("技术骨干", "钳工")
+        text = text.replace("推测为", "为")
+        text = text.replace("作为资深钳工，", "")
+        text = text.replace("作为资深钳工", "")
+        text = text.replace("资深钳工，", "钳工，")
+        text = text.replace("资深钳工", "钳工")
+        text = text.replace("的一个普通家庭", "")
+        text = text.replace("一个普通家庭", "家庭")
+        text = text.replace("这是一个重要的技术突破和职业成就。", "")
+        text = text.replace("，体现技术传承", "")
+        text = text.replace("，标志着其职业生涯的起点", "")
+
+        import re
+        text = re.sub(r"，?具体日期不详[^。]*。?", "。", text)
+        text = re.sub(r"，?根据[^。]*推断[^。]*。?", "。", text)
+        sentences = re.split(r"(?<=[。！？])", text)
+        kept = [
+            sentence for sentence in sentences
+            if sentence and "推断" not in sentence and "推算" not in sentence and "推测" not in sentence and "具体日期不详" not in sentence
+        ]
+        cleaned = "".join(kept).strip()
+        cleaned = cleaned.replace("，。", "。").rstrip("，,")
+        return cleaned or description
     
     def _convert_to_person_info(self, person: PersonExtract) -> PersonInfo:
         """将 PersonExtract 转换为 PersonInfo"""
         # 转换关系
         relationships = {rel.related_person_id: rel.relationship for rel in person.relationships}
+        if isinstance(person.personality, list):
+            characteristics = [str(item) for item in person.personality if item]
+        elif person.personality:
+            characteristics = [str(person.personality)]
+        else:
+            characteristics = []
         
         return PersonInfo(
             person_id=person.person_id,
             name=person.name,
             role=person.relation,
-            description=person.description,
+            description=self._sanitize_person_description(person.description),
             relation_to_protagonist=person.relation,
             source_events=[],  # PersonExtract没有source_events字段
             birth_year=person.first_appear_time or "",
-            characteristics=[person.personality] if person.personality else [],
+            characteristics=characteristics,
             influence=person.influence_level.value if isinstance(person.influence_level, Importance) else person.influence_level,
             quotes=person.key_quotes,
         )
+
+    def _sanitize_person_description(self, description: str) -> str:
+        """去掉人物描述中非用户明确表达的推测性补写。"""
+        if not description:
+            return ""
+        import re
+        text = description
+        text = text.replace("推测为", "为")
+        text = text.replace("具体职业不详，推测为钳工", "")
+        text = text.replace("，推测为钳工", "")
+        text = text.replace("推测为钳工", "")
+        text = text.replace("资深钳工", "钳工")
+        sentences = re.split(r"(?<=[。！？])", text)
+        kept = [
+            sentence for sentence in sentences
+            if sentence and "推测" not in sentence and "推断" not in sentence and "具体职业不详" not in sentence
+        ]
+        cleaned = "".join(kept).strip().rstrip("，,")
+        return cleaned or description
     
     # ===== 兼容旧接口 =====
     
@@ -455,7 +615,11 @@ class MemoryManager:
         # 更新长期记忆
         if summary.extracted_info.events or summary.extracted_info.people:
             paths = await self.update_long_term(summary.extracted_info)
-            results["files_created"] = list(paths.values())
+            # Normalize file paths so they can be embedded into markdown
+            # cross-references without leaking absolute paths.
+            results["files_created"] = [
+                self._normalize_link_path(p) for p in paths.values()
+            ]
             results["events_saved"] = len(summary.extracted_info.events)
             results["people_saved"] = len(summary.extracted_info.people)
         

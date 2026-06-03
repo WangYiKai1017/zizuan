@@ -60,7 +60,13 @@ async def send_message(request: InterviewMessageRequest):
 
     async def generate():
         try:
-            await runner.handle_message(request.message)
+            candidate_questions = None
+            if request.candidate_questions:
+                candidate_questions = [
+                    {"id": cq.id, "question": cq.question}
+                    for cq in request.candidate_questions
+                ]
+            await runner.handle_message(request.message, candidate_questions=candidate_questions)
         except Exception as ex:
             await emitter.emit_error("AGENT_ERROR", str(ex), recoverable=False)
             await emitter.emit_done()
@@ -79,6 +85,11 @@ async def end_interview(request: InterviewEndRequest):
     if not session or session.agent_type != AgentType.INTERVIEW:
         raise HTTPException(status_code=404, detail={
             "error": {"code": "SESSION_NOT_FOUND", "message": "会话不存在", "details": None}
+        })
+
+    if session.session_id != request.session_id:
+        raise HTTPException(status_code=404, detail={
+            "error": {"code": "SESSION_NOT_FOUND", "message": "会话ID不匹配", "details": None}
         })
 
     emitter = SSEEmitter()  # Not used for streaming here, but needed by runner constructor

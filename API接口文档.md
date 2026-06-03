@@ -157,16 +157,61 @@ data: {"session_id": "sess_20260516_103000_abc123", "message": "您好！我是�
 {
   "user_id": "test_user002",
   "session_id": "sess_20260516_103000_abc123",
-  "message": "我叫张伟，今年78岁了。"
+  "message": "我叫张伟，今年78岁了。",
+  "candidate_questions": [
+    {"id": "q1", "question": "您当年为什么选择参军？"}
+  ]
 }
 ```
+
+**字段说明：**
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `user_id` | string | 是 | 用户标识 |
+| `session_id` | string | 是 | 会话标识（由 start 接口返回） |
+| `message` | string | 是 | 用户消息内容 |
+| `candidate_questions` | array | 否 | 家属提前准备的候选问题列表（仅 interview 阶段生效） |
+
+`candidate_questions` 每项结构：
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `id` | string | 问题唯一标识（前端用于回写云函数标记 asked） |
+| `question` | string | 问题原文 |
 
 **响应：** SSE 流
 
 ```
 event: agent_message
-data: {"session_id": "sess_20260516_103000_abc123", "message": "张伟老师您好！78岁，那您经历了很多时代变迁呢。请问您出生在哪里？", "phase": "profile", "turn_count": 2, "timestamp": "2026-05-16T10:30:15+08:00"}
+data: {"session_id": "sess_20260516_103000_abc123", "message": "张伟老师您好！78岁，那您经历了很多时代变迁呢。请问您出生在哪里？", "phase": "profile", "question_source": "generated", "candidate_question_id": null, "timestamp": "2026-05-16T10:30:15+08:00"}
 
+```
+
+**`agent_message` 字段说明：**
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `session_id` | string | 会话标识 |
+| `message` | string | Agent 回复内容 |
+| `phase` | string | 当前阶段（profile / interview / ending） |
+| `question_source` | string | 问题来源：`generated`（AI 生成）或 `candidate_question`（候选问题改写） |
+| `candidate_question_id` | string \| null | 当 `question_source` 为 `candidate_question` 时，返回对应的候选问题 ID |
+| `timestamp` | string | ISO 8601 时间戳 |
+
+**使用候选问题示例：**
+
+当老人回答与候选问题相关时，Agent 会选择并改写该问题：
+
+```
+event: agent_message
+data: {"session_id": "sess_20260516_103000_abc123", "message": "您刚才提到在部队待了五年，当时是什么让您下定决心去参军的？", "phase": "interview", "question_source": "candidate_question", "candidate_question_id": "q1", "timestamp": "2026-05-16T10:31:00+08:00"}
+
+```
+
+前端收到 `question_source=candidate_question` 后，应回写云函数标记该候选问题为 `asked`：
+```
+PATCH /candidate-questions/{candidate_question_id}  status=asked
 ```
 
 **说明：**
@@ -177,7 +222,7 @@ event: phase_changed
 data: {"session_id": "sess_20260516_103000_abc123", "from_phase": "profile", "to_phase": "interview", "timestamp": "2026-05-16T10:31:00+08:00"}
 
 event: agent_message
-data: {"session_id": "sess_20260516_103000_abc123", "message": "好的，基本信息收集完毕。现在让我们开始聊聊您的人生故事吧...", "phase": "interview", "turn_count": 6, "timestamp": "2026-05-16T10:31:01+08:00"}
+data: {"session_id": "sess_20260516_103000_abc123", "message": "好的，基本信息收集完毕。现在让我们开始聊聊您的人生故事吧...", "phase": "interview", "question_source": "generated", "candidate_question_id": null, "timestamp": "2026-05-16T10:31:01+08:00"}
 
 ```
 

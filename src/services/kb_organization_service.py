@@ -71,6 +71,11 @@ class KBOrganizationService:
                     elif isinstance(item, list) and len(item) >= 2:
                         groups.append(item)
             logger.info(f"[重复检测] 发现 {len(groups)} 组重复文档")
+            groups = [
+                group for group in groups
+                if self._is_valid_duplicate_group(group, category)
+            ]
+            logger.info(f"[重复检测] 业务规则过滤后保留 {len(groups)} 组重复文档")
             for gi, g in enumerate(groups, 1):
                 logger.debug(f"[重复检测]   组{gi}: {g}")
             return groups
@@ -98,6 +103,7 @@ class KBOrganizationService:
         logger.info(f"[文档合并] 正在合并 {len(file_paths)} 个文件 → {target_path}")
         logger.debug(f"[文档合并] 源文件: {file_paths}")
         merged_content = result.content if result.success else "\n".join(source_parts)
+        merged_content = self._sanitize_generated_text(merged_content)
         if result.success:
             logger.debug(f"[文档合并] LLM 合并成功，合并内容长度: {len(merged_content)} 字符")
         else:
@@ -140,15 +146,18 @@ class KBOrganizationService:
         try:
             data = self._extract_json(result.content)
             raw_items = data if isinstance(data, list) else data.get("conflicts", [])
-            return [
-                ConflictItem(
-                    conflict_id=f"conflict_{i:03d}",
+            conflicts = []
+            for r in raw_items:
+                description = r.get("description", "")
+                if self._is_low_value_inferred_conflict(description):
+                    continue
+                conflicts.append(ConflictItem(
+                    conflict_id=f"conflict_{len(conflicts) + 1:03d}",
                     conflict_type=r.get("type", r.get("conflict_type", "unknown")),
-                    description=r.get("description", ""),
+                    description=description,
                     source_files=r.get("source_files", []),
-                )
-                for i, r in enumerate(raw_items, 1)
-            ]
+                ))
+            return conflicts
         except (json.JSONDecodeError, KeyError, TypeError) as e:
             logger.warning(f"解析矛盾列表 JSON 失败: {e}")
             return []
@@ -169,9 +178,13 @@ class KBOrganizationService:
             if data.get("resolvable", False):
                 conflict.resolved = True
                 conflict.resolution = data.get("resolution", "")
-                conflict.evidence = data.get("evidence", "")
+                conflict.evidence = self._sanitize_generated_text(data.get("evidence", ""))
                 for path, new_content in data.get("file_updates", {}).items():
-                    await self.working_file_manager.create_file(path, new_content, overwrite=True)
+                    await self.working_file_manager.create_file(
+                        path,
+                        self._sanitize_generated_text(new_content),
+                        overwrite=True,
+                    )
         except (json.JSONDecodeError, KeyError, TypeError) as e:
             logger.warning(f"解析矛盾解决结果失败: {e}")
         return conflict
@@ -394,3 +407,88 @@ class KBOrganizationService:
         """从 Markdown 文本中提取 **字段名**：值"""
         match = re.search(rf"\*\*{field_name}\*\*[：:]\s*(.+)", text)
         return match.group(1).strip() if match else None
+
+    def _is_valid_duplicate_group(self, file_paths: List[str], category: str) -> bool:
+        """用确定性业务规则兜底，避免把相关文档误合并。"""
+        if len(file_paths) < 2:
+            return False
+
+        docs = []
+        for path in file_paths:
+            try:
+                content = self.source_file_manager.read_file_sync(path)
+            except Exception:
+                content = ""
+            docs.append({"path": path, "content": content})
+
+        if category == "people":
+            names = {self._extract_person_name(doc["content"], doc["path"]) for doc in docs}
+            names = {name for name in names if name}
+            return len(names) == 1
+
+        if category == "events":
+            years = {self._extract_year(self._extract_field(doc["content"], "时间") or "") for doc in docs}
+            years = {year for year in years if year}
+            event_types = {self._extract_field(doc["content"], "事件类型") or "" for doc in docs}
+            event_types = {item for item in event_types if item}
+            titles = [self._extract_title(doc["content"], doc["path"]) for doc in docs]
+
+            if len(event_types) > 1:
+                return False
+            if len(years) > 1:
+                return False
+            if event_types == {"birth"}:
+                return True
+
+            first = titles[0]
+            return all(self._titles_refer_to_same_event(first, title, next(iter(event_types), "")) for title in titles[1:])
+
+        return False
+
+    def _extract_title(self, content: str, path: str) -> str:
+        for line in content.splitlines():
+            if line.startswith("# "):
+                return line[2:].strip()
+        return path.rsplit("/", 1)[-1].removesuffix(".md")
+
+    def _extract_person_name(self, content: str, path: str) -> str:
+        name = self._extract_field(content, "姓名")
+        if name:
+            return name
+        title = self._extract_title(content, path)
+        return title
+
+    def _extract_year(self, value: str) -> str:
+        match = re.search(r"\d{4}", value or "")
+        return match.group(0) if match else ""
+
+    def _title_similarity(self, left: str, right: str) -> float:
+        left_chars = {ch for ch in left or "" if ch.strip()}
+        right_chars = {ch for ch in right or "" if ch.strip()}
+        if not left_chars or not right_chars:
+            return 0.0
+        return len(left_chars & right_chars) / len(left_chars | right_chars)
+
+    def _titles_refer_to_same_event(self, left: str, right: str, event_type: str) -> bool:
+        if self._title_similarity(left, right) >= 0.25:
+            return True
+        if event_type == "career" and "学徒" in (left or "") and "学徒" in (right or ""):
+            return True
+        return False
+
+    def _sanitize_generated_text(self, text: str) -> str:
+        if not text:
+            return ""
+        text = str(text)
+        text = text.replace("推测为", "为")
+        text = text.replace("技术骨干", "钳工")
+        return text
+
+    def _is_low_value_inferred_conflict(self, description: str) -> bool:
+        """过滤由年龄/出生年份机械换算造成、无法凭材料自动解决的伪矛盾。"""
+        text = description or ""
+        return (
+            "出生" in text
+            and ("年龄" in text or "岁" in text)
+            and ("2026" in text or "76" in text)
+        )

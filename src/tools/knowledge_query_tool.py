@@ -11,15 +11,19 @@ logger = logging.getLogger(__name__)
 class KnowledgeQueryTool:
     """
     知识库查询工具
-    
+
     职责：
     - 封装KnowledgeBaseQuerier的调用
     - 提供简洁的查询接口
     - 处理查询结果格式化
-    
+
     使用场景：
     - InterviewAgent识别到关键信息时调用
     - ResumeSession分析历史对话后调用
+
+    安全边界：
+    - /biography 路径排除已在 KnowledgeBaseQuerier 层实现，
+      list_files / read_file 会自动过滤并拒绝访问该路径。
     """
     
     def __init__(self, querier: KnowledgeBaseQuerier = None):

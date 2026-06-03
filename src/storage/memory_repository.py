@@ -187,6 +187,9 @@ class MemoryRepository:
         phase_dir = self._get_phase_directory(event.time)
         file_name = self._generate_event_filename(event.title)
         relative_path = f"events/{phase_dir}/{file_name}.md"
+        duplicate_path = self._remove_duplicate_event_files(event, relative_path)
+        if duplicate_path:
+            relative_path = duplicate_path
         
         # 转换为Markdown并保存
         content = event.to_markdown()
@@ -205,7 +208,12 @@ class MemoryRepository:
             raise ValueError("Person must have an ID")
         
         # 确定存储路径
-        if person.role.lower() == "protagonist" or person.relation_to_protagonist == "自己" or person.name == "主人公":
+        if (
+            person.role.lower() == "protagonist"
+            or person.relation_to_protagonist in ["自己", "本人", "主人公", "被采访者"]
+            or person.role in ["自己", "本人", "主人公", "被采访者"]
+            or person.name == "主人公"
+        ):
             # 主人公信息单独存储
             relative_path = "people/protagonist.md"
         else:
@@ -248,16 +256,53 @@ class MemoryRepository:
     async def update_timeline(self, event: EventInfo) -> None:
         """更新时间线文件"""
         timeline_path = "timeline/life-events.md"
-        
-        # 时间线条目
-        entry = f"""
-## {event.time}
-- **事件**: {event.title}
-- **类型**: {event.type}
-- **详情**: [[../events/{self._get_phase_directory(event.time)}/{self._generate_event_filename(event.title)}.md|查看详情]]
-"""
-        
-        await self.file_manager.update_file(timeline_path, entry, append=True)
+        file_path = self.file_manager.base_path / timeline_path
+        file_path.parent.mkdir(parents=True, exist_ok=True)
+        file_path.write_text(self._build_timeline_from_event_files(), encoding="utf-8")
+
+    def _build_timeline_from_event_files(self) -> str:
+        """根据当前事件文件重建时间线，避免追加式写入留下重复或失效链接。"""
+        events_root = self.file_manager.base_path / "events"
+        entries = []
+        seen = set()
+
+        for md_file in sorted(events_root.rglob("*.md")) if events_root.exists() else []:
+            try:
+                content = md_file.read_text(encoding="utf-8")
+            except Exception:
+                continue
+
+            title = self._extract_markdown_title(content)
+            time_text = self._extract_markdown_field(content, "时间")
+            event_type = self._extract_markdown_field(content, "事件类型")
+            if not title or not time_text:
+                continue
+
+            key = (self._extract_year(time_text) or time_text, title)
+            if key in seen:
+                continue
+            seen.add(key)
+
+            rel = md_file.relative_to(self.file_manager.base_path).as_posix()
+            entries.append({
+                "year": self._extract_year(time_text) or time_text,
+                "time": time_text,
+                "title": title,
+                "type": event_type or "other",
+                "path": rel,
+            })
+
+        entries.sort(key=lambda item: (item["year"], item["title"]))
+        lines = []
+        for item in entries:
+            lines.extend([
+                f"## {item['time']}",
+                f"- **事件**: {item['title']}",
+                f"- **类型**: {item['type']}",
+                f"- **详情**: [[../{item['path']}|查看详情]]",
+                "",
+            ])
+        return "\n".join(lines).rstrip() + ("\n" if lines else "")
     
     async def query_events(
         self,
@@ -315,14 +360,14 @@ class MemoryRepository:
         
         # 提取年份（如果有）
         import re
-        year_match = re.search(r'\d{4}年', time_lower)
+        year_match = re.search(r'\d{4}', time_lower)
         if year_match:
             year = int(year_match.group(0)[:4])
-            if year >= 1950 and year <= 1960:  # 假设1950-1960年是用户的童年时期
+            if year <= 1960:  # 简化：出生及早年
                 return "childhood"
             elif year >= 1961 and year <= 1970:  # 少年
                 return "youth"
-            elif year >= 1971 and year <= 1990:  # 青年
+            elif year >= 1971 and year <= 2010:  # 青壮年/中年
                 return "middle_age"
         
         # 根据关键词判断
@@ -337,11 +382,11 @@ class MemoryRepository:
     
     def _get_role_directory(self, role: str) -> str:
         """根据角色确定目录"""
-        if role in ["父亲", "母亲", "配偶", "子女"]:
+        if role in ["父亲", "母亲", "配偶", "子女", "妻子", "丈夫", "老伴", "女儿", "儿子", "外孙女", "外孙", "孙女", "孙子"]:
             return "family"
         elif role in ["朋友", "邻居"]:
             return "friends"
-        elif role in ["同事", "上司", "下属"]:
+        elif role in ["同事", "上司", "下属", "徒弟", "师傅"]:
             return "colleagues"
         else:
             return "others"
@@ -352,6 +397,88 @@ class MemoryRepository:
         import re
         name = re.sub(r'[^\w\u4e00-\u9fff]', '-', title)
         return name[:50]  # 限制长度
+
+    def _remove_duplicate_event_files(self, event: EventInfo, target_relative_path: str) -> Optional[str]:
+        """删除同一年份、同类型、标题高度相似的旧事件文件。"""
+        phase_dir = self._get_phase_directory(event.time)
+        dir_path = self.file_manager.base_path / "events" / phase_dir
+        if not dir_path.exists():
+            return None
+
+        target_path = self.file_manager.base_path / target_relative_path
+        event_year = self._extract_year(event.time)
+        for md_file in dir_path.glob("*.md"):
+            if md_file == target_path:
+                continue
+            try:
+                content = md_file.read_text(encoding="utf-8")
+            except Exception:
+                continue
+
+            existing_title = self._extract_markdown_title(content)
+            existing_time = self._extract_markdown_field(content, "时间")
+            existing_type = self._extract_markdown_field(content, "事件类型")
+
+            if event.type == "birth" and existing_type == "birth":
+                should_remove = True
+            else:
+                should_remove = False
+
+            if not should_remove and event_year and self._extract_year(existing_time) != event_year:
+                continue
+            if existing_type and event.type and existing_type != event.type:
+                continue
+            if not should_remove and not self._titles_refer_to_same_event(
+                existing_title,
+                event.title,
+                event.type,
+            ):
+                continue
+
+            if len(existing_title) >= len(event.title or ""):
+                event.title = existing_title
+                return md_file.relative_to(self.file_manager.base_path).as_posix()
+
+            try:
+                md_file.unlink()
+                logger.info(f"Removed duplicate event file: {md_file}")
+            except Exception as e:
+                logger.warning(f"Failed to remove duplicate event file {md_file}: {e}")
+        return None
+
+    def _extract_year(self, value: str) -> str:
+        import re
+        match = re.search(r"\d{4}", value or "")
+        return match.group(0) if match else ""
+
+    def _extract_markdown_title(self, content: str) -> str:
+        for line in content.splitlines():
+            if line.startswith("# "):
+                return line[2:].strip()
+        return ""
+
+    def _extract_markdown_field(self, content: str, label: str) -> str:
+        import re
+        pattern = rf"- \*\*{re.escape(label)}\*\*：(.+)"
+        match = re.search(pattern, content)
+        return match.group(1).strip() if match else ""
+
+    def _title_similarity(self, left: str, right: str) -> float:
+        left_chars = {ch for ch in left or "" if ch.strip()}
+        right_chars = {ch for ch in right or "" if ch.strip()}
+        if not left_chars or not right_chars:
+            return 0.0
+        return len(left_chars & right_chars) / len(left_chars | right_chars)
+
+    def _titles_refer_to_same_event(self, left: str, right: str, event_type: str) -> bool:
+        if self._title_similarity(left, right) >= 0.25:
+            return True
+        if event_type == "career":
+            career_tokens = ["学徒", "进厂", "机械厂", "铁路机械厂", "南京铁路机械厂"]
+            if "学徒" in (left or "") and "学徒" in (right or ""):
+                if any(token in (left or "") or token in (right or "") for token in career_tokens[1:]):
+                    return True
+        return False
     
     def _sanitize_filename(self, name: str) -> str:
         """清理文件名"""

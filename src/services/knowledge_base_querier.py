@@ -14,17 +14,46 @@ from src.models import MemoryQueryResult, MemoryEntry, LinkedContent, SessionSta
 logger = logging.getLogger(__name__)
 
 
+# 不允许访问的路径片段（传记写作模块不在指南工作范围内）
+FORBIDDEN_PATH_SEGMENTS = ("biography",)
+
+
+def _path_is_forbidden(path: str) -> bool:
+    """判断路径是否包含被禁止访问的片段 (如 /biography)"""
+    if not path:
+        return False
+    import os
+    normalized = path.replace("\\", "/").lower()
+    parts = [p for p in normalized.split("/") if p]
+    for seg in FORBIDDEN_PATH_SEGMENTS:
+        seg_lower = seg.lower()
+        if seg_lower in parts:
+            return True
+        # 防护式判断：子串出现 /biography 或 biography/
+        if f"/{seg_lower}" in normalized or f"{seg_lower}/" in normalized:
+            # 仅当作为独立路径段时才拦截（避免误伤名为 biographies 等）
+            if seg_lower in parts:
+                return True
+    return False
+
+
 class KnowledgeBaseTools:
     """
     知识库查询工具集
     提供给 Agent 使用的工具函数
+
+    安全边界：
+    - 严禁访问 /biography 路径下的任何内容（传记写作模块独立管理）
+    - list_files 过滤掉 biography 目录
+    - read_file 遇到 biography 路径返回错误
     """
-    
+
     def __init__(self, file_manager: MarkdownFileManager):
         self.file_manager = file_manager
         self._current_target_path = None
         self._visited_paths = set()  # 用于记录已访问的路径
         self._suspected_files = []   # 疑似相关的文件列表
+        self._tool_call_count = 0    # 工具调用计数（辅助调试）
         self._tools = self._build_tools()
     
     def set_target_path(self, target_path: str) -> None:
@@ -57,52 +86,75 @@ class KnowledgeBaseTools:
         @tool
         def list_files(path: str = "", recursive: bool = True) -> str:
             """列出指定目录下的所有文件和子目录，包含详细信息
-            
+
             Args:
                 path: 相对路径（相对于当前target_path）
                 recursive: 是否递归列出所有子目录（默认开启）
-                
+
             Returns:
                 JSON格式的文件和目录列表，包含名称、类型、修改时间等信息
+                /biography 相关路径会被过滤掉
             """
             try:
+                self._tool_call_count += 1
+                # 拒绝直接请求 biography 路径
+                if _path_is_forbidden(path):
+                    logger.warning(f"Blocked list_files attempt on forbidden path: {path}")
+                    return json.dumps(
+                        {"error": "该路径不在工作区域内", "path": path},
+                        ensure_ascii=False,
+                    )
+
                 full_path = self.get_full_path(path)
-                
+
                 # 记录已访问的路径
                 self._visited_paths.add(path)
-                
+
                 # 调用增强后的list_files方法，默认递归列出所有层级
                 files = self.file_manager.list_files(
                     directory=path,
                     include_details=True,
                     recursive=recursive
                 )
-                
+
+                # 过滤 /biography 路径下的任何条目
+                filtered_files = []
+                for item in files:
+                    item_name = item.get("name", "")
+                    item_path = item.get("path", "") or item.get("relative_path", "") or item_name
+                    candidate = f"{path}/{item_path}" if path else item_path
+                    if _path_is_forbidden(item_name) or _path_is_forbidden(item_path) or _path_is_forbidden(candidate):
+                        logger.debug(f"Filtered forbidden path from list_files: {candidate}")
+                        continue
+                    filtered_files.append(item)
+
                 # 对结果进行排序，目录优先，按名称排序
                 def sort_key(item):
                     if item["is_dir"]:
                         return (0, item["name"])
                     else:
                         return (1, item["name"])
-                
-                files.sort(key=sort_key)
-                
-                return json.dumps(files, ensure_ascii=False, indent=2, default=str)
+
+                filtered_files.sort(key=sort_key)
+
+                return json.dumps(filtered_files, ensure_ascii=False, indent=2, default=str)
             except Exception as e:
                 logger.error(f"Error in list_files: {e}")
                 return json.dumps([], ensure_ascii=False)
-        
+
         @tool
         def read_file(file_path: str) -> str:
-            """读取指定文件的内容"""
+            """读取指定文件的内容。/biography 路径不可访问。"""
             try:
-                # full_path = self.get_full_path(file_path)
-                # raise Exception(f"read_file: {full_path}, {file_path}")
-                # 异步版本
-                # content = asyncio.run(self.file_manager.read_file(full_path))
+                self._tool_call_count += 1
+                # /biography 路径拦截
+                if _path_is_forbidden(file_path):
+                    logger.warning(f"Blocked read_file attempt on forbidden path: {file_path}")
+                    return "该路径不在工作区域内"
+
                 # 使用同步版本的read_file_sync避免事件循环问题
                 content = self.file_manager.read_file_sync(file_path)
-                return content 
+                return content
             except Exception as e:
                 logger.error(f"Error in read_file: {e}")
                 return f"无法读取文件:{file_path}，错误信息：{str(e)}"
@@ -207,16 +259,26 @@ class KnowledgeBaseQuerier:
     - 理解用户输入的查询意图
     - 使用 ReAct 模式动态查询知识库
     - 判断并返回相关的记忆上下文
-    
+
     使用场景：
     - ConversationOrchestrator 每轮异步调用
     - QuestionGenerator 生成问题时参考
-    
+
     调用LLMService：
     - 使用 "knowledge_base_react" 模板
     - 通过 LangChain Agent 框架实现 ReAct 循环
+
+    迭代控制：
+    - max_iterations=7：在最多 7 轮工具调用后强制输出 Final Answer
+    - 递归限制 = 2 * max_iterations + 4（每轮包含 model + tool 两个节点）
+
+    起点优先级：
+    - 若 target_path 下存在 summary_index.md，则作为初始上下文注入系统提示
     """
-    
+
+    # 查询迭代硕段上限
+    MAX_ITERATIONS: int = 7
+
     def __init__(
         self,
         file_manager: MarkdownFileManager,
@@ -224,7 +286,7 @@ class KnowledgeBaseQuerier:
     ):
         """
         初始化
-        
+
         Args:
             file_manager: Markdown文件管理器
             llm_service: LLM服务（用于 ReAct Agent）
@@ -232,27 +294,59 @@ class KnowledgeBaseQuerier:
         self.file_manager = file_manager
         self.llm_service = llm_service or get_llm_service()
         self.tools = KnowledgeBaseTools(file_manager)
+        self._base_system_prompt: str = ""
         self.agent_graph = self._build_agent()
     
     def _build_agent(self):
         """构建 Agent"""
         # 获取 LangChain LLM
         llm = self.llm_service._model
-        
+
         # 获取 ReAct Prompt 模板
         template = self.llm_service._prompt_templates.get("knowledge_base_react")
         if not template:
             raise ValueError("knowledge_base_react template not found")
-        
+
+        # 保存基础 system prompt，后续可动态拼接 summary_index
+        self._base_system_prompt = template.system_prompt
+
         # 创建 Agent 图
         agent_graph = create_agent(
             model=llm,
             tools=self.tools.tools,
-            system_prompt=template.system_prompt,
+            system_prompt=self._base_system_prompt,
             debug=True,
         )
-        
+
         return agent_graph
+
+    def _read_summary_index(self, target_path: str) -> str:
+        """读取 target_path 下的 summary_index.md，不存在则返回空串"""
+        try:
+            import os
+            summary_path = os.path.join(target_path, "summary_index.md")
+            if not os.path.exists(summary_path):
+                return ""
+            with open(summary_path, "r", encoding="utf-8") as f:
+                return f.read().strip()
+        except Exception as e:
+            logger.warning(f"Failed to read summary_index.md at {target_path}: {e}")
+            return ""
+
+    def _build_system_prompt_with_summary(self, target_path: str) -> str:
+        """若存在 summary_index.md，将其内容拼接到 system prompt 顶部"""
+        summary_content = self._read_summary_index(target_path)
+        if not summary_content:
+            return self._base_system_prompt
+
+        prefix = (
+            "你已拥有以下记忆库摘要目录作为参考：\n"
+            "---\n"
+            f"{summary_content}\n"
+            "---\n"
+            "请基于此目录选择最相关的文件进行深入查阅。\n\n"
+        )
+        return prefix + self._base_system_prompt
     
     async def query(
         self,
@@ -294,22 +388,47 @@ class KnowledgeBaseQuerier:
             
             # 设置目标路径
             self.tools.set_target_path(target_path)
-            
+            # 重置本轮查询的调用计数
+            self.tools._tool_call_count = 0
+
             # 更新工具描述，包含目标路径信息
             tools_description = self._get_tools_description(target_path)
-            
-            # 执行 Agent
-            inputs = {
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": f"{user_input}\n\n查询范围：{target_path}\n\n可用工具列表：\n{tools_description}"
-                    }
-                ]
-            }
-            
+
+            # 尝试读取 summary_index.md 作为初始上下文
+            summary_content = self._read_summary_index(target_path)
+
+            # 构造输入消息：若存在 summary_index，作为 SystemMessage 领表拼接
+            messages_payload = []
+            if summary_content:
+                summary_system_msg = (
+                    "你已拥有以下记忆库摘要目录作为参考：\n"
+                    "---\n"
+                    f"{summary_content}\n"
+                    "---\n"
+                    "请基于此目录选择最相关的文件进行深入查阅，避免盲目遍历所有目录。"
+                )
+                messages_payload.append({"role": "system", "content": summary_system_msg})
+
+            messages_payload.append({
+                "role": "user",
+                "content": (
+                    f"{user_input}\n\n查询范围：{target_path}\n\n"
+                    f"最大工具调用轮次：{self.MAX_ITERATIONS}。请高效使用每一次查询机会，"
+                    f"超出后请立即输出 Final Answer。\n\n可用工具列表：\n{tools_description}"
+                ),
+            })
+
+            inputs = {"messages": messages_payload}
+
+            # 设置递归限制：每轮迭代 = model 节点 + tool 节点 ≈ 2 步，
+            # 额外预留 4 步用于起始 / 收尾
+            recursion_limit = self.MAX_ITERATIONS * 2 + 4
+
             # 使用 ainvoke 获取完整结果
-            result = await self.agent_graph.ainvoke(inputs)
+            result = await self.agent_graph.ainvoke(
+                inputs,
+                config={"recursion_limit": recursion_limit},
+            )
             
             # 获取最终响应消息
             logger.info(f"last agent result: {result["messages"][-1]}")

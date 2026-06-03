@@ -117,4 +117,10 @@ def get_default_config() -> LLMConfig:
         return LLMConfig.from_env_deepseek()
     except ValueError:
         # 如果DeepSeek配置失败，回退到Qwen
-        return LLMConfig.from_env()
+        try:
+            return LLMConfig.from_env()
+        except ValueError as qwen_error:
+            raise ValueError(
+                "未配置可用的LLM API。请配置 DEEPSEEK_URL + DEEPSEEK_APIKEY，"
+                "或配置 QWEN_URL + QWEN_APIKEY。"
+            ) from qwen_error

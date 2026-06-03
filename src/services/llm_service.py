@@ -4,6 +4,7 @@ from pydantic import BaseModel
 import asyncio
 from datetime import datetime
 import logging
+import os
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage, AIMessage
 from langchain_core.prompts import ChatPromptTemplate
@@ -80,10 +81,14 @@ class LLMService:
         self._prompt_templates: Dict[str, PromptTemplate] = {}
         self._call_history: List[LLMCallResult] = []
         self._total_tokens = 0
-        
+        self._langfuse_handler: Optional[Any] = None
+
         # 初始化模型
         self._init_model()
-        
+
+        # 初始化Langfuse观测
+        self._init_langfuse()
+
         # 加载Prompt模板
         self._load_prompt_templates()
     
@@ -122,7 +127,17 @@ class LLMService:
             raise ValueError(f"Unsupported provider: {model_config.provider}")
         
         logger.info(f"Initialized LLM model: {model_config.provider}/{model_config.model_name}")
-    
+
+    def _init_langfuse(self) -> None:
+        """初始化Langfuse观测handler（自动从环境变量读取配置）"""
+        try:
+            from langfuse.langchain import CallbackHandler
+
+            self._langfuse_handler = CallbackHandler()
+            logger.info("Langfuse callback handler initialized")
+        except Exception as e:
+            logger.warning(f"Failed to initialize Langfuse: {e}")
+
     def _load_prompt_templates(self) -> None:
         """加载所有Prompt模板（从外部Markdown文件和Python模块）"""
         import os
@@ -421,7 +436,10 @@ class LLMService:
         for attempt in range(max_retries):
             try:
                 print(f"正在请求大模型...")
-                response = await self.model.ainvoke(messages, **kwargs)
+                config = {}
+                if self._langfuse_handler is not None:
+                    config["callbacks"] = [self._langfuse_handler]
+                response = await self.model.ainvoke(messages, config=config, **kwargs)
                 print(f"请求完成")
                 return response
             except Exception as e:

@@ -86,7 +86,7 @@ class PersonExtract(BaseModel):
     first_appear_time: Optional[str] = None
     description: str
     appearance: Optional[str] = None
-    personality: Optional[str] = None
+    personality: Optional[Any] = None
     occupation: Optional[str] = None
     key_quotes: List[str] = Field(default_factory=list)
     relationships: List[PersonRelationship] = Field(default_factory=list)
@@ -123,7 +123,7 @@ class FileSuggestion(BaseModel):
 
 
 class StorageSuggestions(BaseModel):
-    timeline_file: Optional[str] = None
+    timeline_file: Optional[Any] = None
     event_files: List[FileSuggestion] = Field(default_factory=list)
     people_files: List[FileSuggestion] = Field(default_factory=list)
 
