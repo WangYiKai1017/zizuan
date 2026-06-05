@@ -231,6 +231,7 @@
 【未收集必填】{{required_fields}}
 【未收集选填】{{optional_fields}}
 【上一轮用户回答】{{last_user_input}}
+【最近对话】{{conversation_history}}
 【称呼方式】{{elderly_title}}
 
 ## 状态说明
@@ -271,6 +272,8 @@
 4. 简单易回答的问题优先于复杂问题
 
 ## 输出格式
+
+必须只输出一个合法 JSON object，不要输出 JSON 之外的寒暄、解释、Markdown 代码块或自然语言正文。
 
 ```json
 {

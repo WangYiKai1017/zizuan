@@ -7,6 +7,7 @@ import re
 
 from src.services.llm_service import LLMService, get_llm_service
 from src.services.memory_manager import MemoryManager
+from src.services.observability import observe_step
 from src.storage.memory_repository import MemoryRepository
 
 logger = logging.getLogger(__name__)
@@ -90,7 +91,7 @@ class ProfileCollectionAgent:
             # 返回默认模板
             return {
                 "profile_welcome": "你是一位温暖、友好的采访助手，正在帮助一位老人开始记录人生故事。\n请用亲切自然的语气打招呼，并询问老人的姓名。像晚辈聊天一样，不要太正式。",
-                "profile_collection": "## 已收集信息\n{{collected_info}}\n\n## 对话历史\n{{conversation_history}}\n\n## 任务\n根据已收集的信息，选择一个合适的字段继续询问。\n使用自然的对话语气，不要像填表一样提问。",
+                "profile_collection": "## 已收集信息\n{{collected_info}}\n\n## 对话历史\n{{conversation_history}}\n\n## 任务\n根据已收集的信息，选择一个合适的字段继续询问。\n使用自然的对话语气，不要像填表一样提问。\n只输出JSON。",
                 "profile_extraction": "## 用户输入\n{{user_input}}\n\n## 已收集信息\n{{collected_info}}\n\n## 任务\n从用户输入中提取结构化信息，以JSON格式输出。\n只提取明确提到的信息，不要推断。"
             }
     
@@ -124,7 +125,8 @@ class ProfileCollectionAgent:
     async def start(self) -> str:
         """启动初始化流程"""
         if self.collected_info:
-            if self._should_complete():
+            decision = self._observe_profile_phase_decision(trigger="start")
+            if decision["is_complete"]:
                 self.is_completed = True
                 message = await self._generate_completion_message()
             else:
@@ -179,7 +181,8 @@ class ProfileCollectionAgent:
         self.collected_info.update(self._normalize_fields(extracted))
         
         # 检查结束条件
-        if self._should_complete():
+        decision = self._observe_profile_phase_decision(trigger="after_extract")
+        if decision["is_complete"]:
             self.is_completed = True
             completion_message = await self._generate_completion_message()
             self.conversation_history.append({
@@ -265,12 +268,15 @@ class ProfileCollectionAgent:
             logger.error(f"Profile extraction LLM call failed: {e}")
             fields = {}
 
-        fallback_fields = self._fallback_extract_info(user_input)
         normalized = self._normalize_fields(fields)
+        fallback_fields = self._fallback_extract_info(user_input)
         for key, value in fallback_fields.items():
-            if self._should_use_fallback_value(key, normalized.get(key), value):
+            if key not in normalized and not self.collected_info.get(key):
                 normalized[key] = value
-        return normalized
+        return {
+            key: value for key, value in normalized.items()
+            if not self.collected_info.get(key)
+        }
 
     def _parse_json_response(self, content: Any) -> Optional[Dict[str, Any]]:
         """兼容裸 JSON 和 fenced code block JSON。"""
@@ -296,24 +302,6 @@ class ProfileCollectionAgent:
                 except json.JSONDecodeError:
                     return None
         return None
-
-    def _should_use_fallback_value(self, key: str, current: Any, fallback: Any) -> bool:
-        """当 LLM 返回过于概括时，保留自然文本中更具体的信息。"""
-        if fallback is None or fallback == "":
-            return False
-        if current is None or current == "":
-            return True
-
-        current_text = self._stringify_field(current)
-        fallback_text = self._stringify_field(fallback)
-        generic_values = {
-            "family_status": {"已婚", "丧偶", "离异", "未婚"},
-            "living_arrangement": {"与老伴同住", "与子女同住", "独居", "养老院"},
-        }
-        if current_text in generic_values.get(key, set()) and len(fallback_text) > len(current_text):
-            return True
-
-        return len(fallback_text) >= len(current_text) + 6
 
     def _stringify_field(self, value: Any) -> str:
         if isinstance(value, list):
@@ -343,7 +331,17 @@ class ProfileCollectionAgent:
             "居住情况": "living_arrangement",
             "居住安排": "living_arrangement",
             "想讲述的故事": "story_expectation",
+            "想记录的故事": "story_expectation",
+            "想记录的经历": "story_expectation",
+            "想留下的故事": "story_expectation",
+            "想留下的经历": "story_expectation",
             "故事期望": "story_expectation",
+            "故事目标": "story_expectation",
+            "写作目标": "story_expectation",
+            "写作期望": "story_expectation",
+            "记录目标": "story_expectation",
+            "记录期望": "story_expectation",
+            "期望": "story_expectation",
             "人生故事": "story_expectation",
             "children": "children_count",
             "微信ID": "wechat_id",
@@ -359,67 +357,133 @@ class ProfileCollectionAgent:
         return normalized
 
     def _fallback_extract_info(self, user_input: str) -> Dict[str, Any]:
-        """从常见中文自我介绍里保守提取必填字段，作为 LLM 兜底。"""
+        """在 LLM 漏抽时保守补充明确字段；不覆盖 LLM 或已收集字段。"""
         text = user_input.strip()
         fields: Dict[str, Any] = {}
 
-        name_match = re.search(r"(?:我叫|我是|姓名[=:：]?|name[=:：]?)([\u4e00-\u9fa5]{2,6})", text, re.IGNORECASE)
+        name_match = re.search(r"(?:我叫|姓名[=:：]?|名字[=:：]?|name[=:：]?)([\u4e00-\u9fa5]{2,6})", text, re.IGNORECASE)
         if name_match:
             fields["name"] = name_match.group(1)
 
         age_match = re.search(r"(?:今年|年龄[=:：]?|age[=:：]?)?\s*(\d{1,3})\s*岁", text, re.IGNORECASE)
         if age_match:
-            fields["age"] = int(age_match.group(1))
+            fields["age"] = str(int(age_match.group(1)))
 
-        occupation_patterns = [
-            r"(?:退休前是|以前是|原来是|职业[=:：]?|occupation[=:：]?)([^。；;\n，,]+)",
-            r"(退休[^。；;\n，,]{1,20})",
-        ]
-        for pattern in occupation_patterns:
-            match = re.search(pattern, text, re.IGNORECASE)
-            if match:
-                fields["occupation"] = match.group(1).strip()
-                break
-
-        family_keywords = ["妻子", "老伴", "丈夫", "女儿", "儿子", "外孙", "孙子", "孙女", "家庭状况", "family_status"]
-        if any(keyword in text for keyword in family_keywords):
-            match = re.search(r"((?:我和|家庭状况[=:：]?|family_status[=:：]?)?[^。；;\n]*(?:妻子|老伴|丈夫|女儿|儿子|外孙女|外孙|孙子|孙女)[^。；;\n]*)", text, re.IGNORECASE)
-            if match:
-                fields["family_status"] = match.group(1).strip(" ，,；;")
-
-        living_match = re.search(r"(?:住在|居住(?:在|情况[=:：]?)?|living_arrangement[=:：]?)([^。；;\n，,]+)", text, re.IGNORECASE)
-        if living_match:
-            living = living_match.group(1).strip(" ，,；;")
-            if living:
-                if "妻子" in text or "老伴" in text:
-                    living = f"{living}，与老伴同住"
-                fields["living_arrangement"] = living
-
-        expectation_match = re.search(
-            r"(?:希望|想|story_expectation[=:：]?|故事期望[=:：]?)(?:这次自传|把|重点)?(?:记录|讲述|留下)?([^。；;\n]+)",
+        occupation_match = re.search(
+            r"(?:我是|我以前是|退休前是|原来是|职业[是=:：]?|工作[是=:：]?|做(?:过)?|从事)([^。；;\n，,]+)",
             text,
             re.IGNORECASE,
         )
-        if expectation_match:
-            expectation = expectation_match.group(1).strip(" ，,；;")
+        if occupation_match:
+            occupation = occupation_match.group(1).strip(" 啊呀呢的，,；;")
+            if self._looks_like_occupation(occupation):
+                fields["occupation"] = occupation
+
+        family_match = re.search(
+            r"([^。；;\n]*(?:老伴|妻子|丈夫|老婆|老公|儿子|女儿|孩子|孙子|孙女|外孙|外孙女)[^。；;\n]*)",
+            text,
+        )
+        if family_match:
+            family = family_match.group(1).strip(" ，,；;")
+            if family:
+                fields["family_status"] = family
+
+        if re.search(r"(?:独居|自己住|一个人住)", text):
+            fields["living_arrangement"] = "独居"
+        else:
+            living_match = re.search(r"(?:和|跟)([^。；;\n，,]{1,20})(?:一起)?住", text)
+            if living_match:
+                living_with = living_match.group(1).strip(" ，,；;")
+                if living_with:
+                    fields["living_arrangement"] = f"和{living_with}一起住"
+
+        expectation_patterns = [
+            r"(?:这次|我)?(?:最)?(?:想|希望)(?:记录|讲述|讲|留下)([^。；;\n]+)",
+            r"(?:想|希望)把([^。；;\n，,]+?)(?:都)?留给([^。；;\n，,]+)",
+            r"(?:想|希望)让([^。；;\n，,]+?)(?:知道|了解)([^。；;\n，,]+)",
+        ]
+        for pattern in expectation_patterns:
+            expectation_match = re.search(pattern, text)
+            if not expectation_match:
+                continue
+            if len(expectation_match.groups()) == 1:
+                expectation = expectation_match.group(1).strip(" ，,；;")
+            elif "留给" in pattern:
+                left, right = expectation_match.groups()
+                expectation = f"{left.strip(' ，,；;')}留给{right.strip(' ，,；;')}"
+            else:
+                expectation = "".join(
+                    part.strip(" ，,；;") for part in expectation_match.groups()
+                    if part
+                )
             if expectation:
                 fields["story_expectation"] = expectation
+                break
 
         return fields
-    
+
+    def _looks_like_occupation(self, value: str) -> bool:
+        if not value or len(value) > 20:
+            return False
+        occupation_keywords = [
+            "程序员", "工程师", "老师", "教师", "医生", "护士", "司机", "工人",
+            "农民", "会计", "出纳", "厨师", "军人", "干部", "公务员", "警察",
+            "营业员", "售货员", "技术员", "设计师", "律师", "记者", "编辑",
+            "老板", "个体户", "做生意", "退休",
+        ]
+        return any(keyword in value for keyword in occupation_keywords)
+
+    def _missing_required_fields(self) -> List[str]:
+        return [
+            field for field in self.required_fields
+            if field not in self.collected_info or not self.collected_info[field]
+        ]
+
+    def _profile_phase_decision(self) -> Dict[str, Any]:
+        missing_required = self._missing_required_fields()
+        elapsed = self._get_elapsed_minutes()
+        required_complete = not missing_required
+        time_exceeded = elapsed >= self.max_duration_minutes
+        is_complete = required_complete or time_exceeded
+        if required_complete:
+            reason = "all_required_fields_complete"
+        elif time_exceeded:
+            reason = "max_duration_exceeded"
+        else:
+            reason = "missing_required_fields"
+        return {
+            "is_complete": is_complete,
+            "next_phase": "interview" if is_complete else "profile",
+            "reason": reason,
+            "missing_required_fields": missing_required,
+            "collected_fields": sorted(self.collected_info.keys()),
+            "elapsed_minutes": round(elapsed, 3),
+        }
+
+    def _observe_profile_phase_decision(self, trigger: str) -> Dict[str, Any]:
+        decision = self._profile_phase_decision()
+        with observe_step(
+            "profile.phase_decision",
+            as_type="tool",
+            input={
+                "trigger": trigger,
+                "required_fields": self.required_fields,
+                "collected_info": self.collected_info,
+            },
+            metadata={
+                "trigger": trigger,
+                "next_phase": decision["next_phase"],
+                "reason": decision["reason"],
+                "missing_required_fields": decision["missing_required_fields"],
+            },
+        ) as observation:
+            if observation is not None:
+                observation.update(output=decision)
+        return decision
+
     def _should_complete(self) -> bool:
         """判断是否应该结束初始化"""
-        # 检查必填字段
-        required_complete = all(
-            field in self.collected_info and self.collected_info[field]
-            for field in self.required_fields
-        )
-        
-        # 检查时间限制
-        elapsed = self._get_elapsed_minutes()
-        time_exceeded = elapsed >= self.max_duration_minutes
-        
-        return required_complete or time_exceeded
+        return bool(self._profile_phase_decision()["is_complete"])
     
     async def _generate_next_question(self) -> str:
         """
@@ -430,10 +494,7 @@ class ProfileCollectionAgent:
         # 加载profile_collection prompt
         collection_prompt = self.prompt_templates.get("profile_collection", "")
 
-        missing_required = [
-            field for field in self.required_fields
-            if field not in self.collected_info or not self.collected_info[field]
-        ]
+        missing_required = self._missing_required_fields()
         optional_fields = [
             "gender", "birth_year", "birth_place", "children_count",
             "health_status", "important_person", "favorite_memory",
@@ -458,14 +519,48 @@ class ProfileCollectionAgent:
         question = await self.llm_service.invoke(
             prompt=prompt,
             temperature=0.7,
-            history=self.conversation_history,  # 传递对话历史
+            response_format={"type": "json_object"},
             trace_node="profile.generate_next_question",
+            trace_metadata={
+                "current_state": current_state,
+                "missing_required_fields": missing_required,
+                "expected_output": "profile_question_json",
+                "conversation_history_turns": min(len(self.conversation_history), 6),
+            },
         )
         question = question.content
         
         # 解析JSON响应
         question_data = self._parse_json_response(question)
-        return question_data.get("question", question) if question_data else question
+        if question_data and question_data.get("question"):
+            selected_field = (
+                question_data.get("field")
+                or question_data.get("next_field")
+                or question_data.get("target_field")
+            )
+            allowed_fields = set(missing_required + optional_fields)
+            if not missing_required or selected_field in allowed_fields:
+                return question_data["question"]
+            logger.warning(
+                "profile.generate_next_question selected invalid field %s; missing_required=%s",
+                selected_field,
+                missing_required,
+            )
+
+        logger.warning("profile.generate_next_question returned invalid JSON question: %s", question)
+        return self._fallback_next_question(missing_required)
+
+    def _fallback_next_question(self, missing_required: List[str]) -> str:
+        fallback_questions = {
+            "name": "请问您怎么称呼？",
+            "age": "请问您今年高寿了？",
+            "occupation": "您以前主要是做什么工作的？",
+            "family_status": "您方便说说家里的情况吗？比如现在家里有哪些亲人常联系。",
+            "living_arrangement": "您现在是自己住，还是和家人一起住呢？",
+            "story_expectation": "这次记录人生故事，您最想留下哪一类经历呢？",
+        }
+        next_field = missing_required[0] if missing_required else "story_expectation"
+        return fallback_questions.get(next_field, "您愿意再多说一点吗？")
     
     async def _generate_completion_message(self) -> str:
         """生成初始化完成的消息"""

@@ -11,7 +11,7 @@ from src.agents.story_generation_agent import (
 from src.config.llm_config import get_default_config
 from src.service.agent_runners.base_runner import BaseAgentRunner
 from src.services.llm_service import LLMService
-from src.services.observability import ObservabilityContext, observability_context, observe_step
+from src.services.observability import observability_context, observe_step
 
 
 class StoryRunner(BaseAgentRunner):
@@ -30,11 +30,9 @@ class StoryRunner(BaseAgentRunner):
         kb_path = self._get_kb_path()
 
         try:
-            with observability_context(ObservabilityContext(
+            with observability_context(self.build_trace_context(
                 agent="story_generation",
                 operation="generate",
-                user_id=self.user_id,
-                session_id=self.session_id,
             )):
                 agent = self._create_agent(kb_path)
 

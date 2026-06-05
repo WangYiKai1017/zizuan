@@ -8,7 +8,7 @@ from src.config.llm_config import get_default_config
 from src.services.llm_service import LLMService
 from src.services.biography_file_manager import BiographyFileManager
 from src.services.biography_material_analyzer import BiographyMaterialAnalyzer
-from src.services.observability import ObservabilityContext, observability_context, observe_step
+from src.services.observability import observability_context, observe_step
 
 
 class OutlineRunner(BaseAgentRunner):
@@ -37,11 +37,9 @@ class OutlineRunner(BaseAgentRunner):
         kb_path = self._get_kb_path()
 
         try:
-            with observability_context(ObservabilityContext(
+            with observability_context(self.build_trace_context(
                 agent="biography_outline",
                 operation="generate",
-                user_id=self.user_id,
-                session_id=self.session_id,
             )):
                 agent = self._create_agent(kb_path)
 

@@ -4,6 +4,7 @@ import tempfile
 from datetime import datetime
 
 from src.services.memory_manager import MemoryManager
+from src.services.llm_service import LLMCallResult
 from src.storage.memory_repository import MemoryRepository
 from src.storage.markdown_file_manager import MarkdownFileManager
 from src.models import (
@@ -93,7 +94,70 @@ class TestMemoryManager:
         # 验证结果
         assert result == organized_memory
         assert memory_manager.llm_service.invoke_structured.called
+        assert memory_manager.llm_service.invoke_structured.call_args.kwargs["max_tokens"] >= 8192
         assert memory_manager.repository.get_profile("birth_year") == "1950年"
+
+    @pytest.mark.asyncio
+    async def test_organize_and_save_retries_in_batches_after_truncated_json(self, memory_manager):
+        turns = [
+            ConversationTurn(
+                user_input="1956年我搬到绍兴乡下老屋。",
+                agent_response="那老屋是什么样的？",
+                timestamp=datetime.now(),
+                turn_id=1,
+            ),
+            ConversationTurn(
+                user_input="1958年父亲骑车带我去看露天电影。",
+                agent_response="那一定很难忘。",
+                timestamp=datetime.now(),
+                turn_id=2,
+            ),
+        ]
+        first_batch = OrganizedMemory(
+            events=[
+                EventExtract(
+                    event_id="evt_1956",
+                    title="搬到绍兴乡下老屋",
+                    time="1956年",
+                    location="绍兴",
+                    event_type=EventType.MIGRATION,
+                    importance=Importance.NORMAL,
+                    description="用户1956年搬到绍兴乡下老屋。",
+                    confidence=0.9,
+                )
+            ]
+        )
+        second_batch = OrganizedMemory(
+            events=[
+                EventExtract(
+                    event_id="evt_1958",
+                    title="父亲骑车带去看露天电影",
+                    time="1958年",
+                    location="镇上",
+                    event_type=EventType.FAMILY,
+                    importance=Importance.NORMAL,
+                    description="父亲骑自行车带用户去镇上看露天电影。",
+                    confidence=0.9,
+                )
+            ]
+        )
+        memory_manager.llm_service.invoke_structured.side_effect = [
+            (
+                None,
+                LLMCallResult(
+                    success=False,
+                    error="Parse error: Unterminated string starting at: line 10 column 2",
+                ),
+            ),
+            (first_batch, LLMCallResult(success=True, content="{}")),
+            (second_batch, LLMCallResult(success=True, content="{}")),
+        ]
+
+        result = await memory_manager.organize_and_save(turns, PhaseType.CHILDHOOD)
+
+        assert len(result.events) == 2
+        assert memory_manager.llm_service.invoke_structured.await_count == 3
+        assert len(memory_manager.repository.get_all_events()) == 2
     
     @pytest.mark.asyncio
     async def test_apply_summary(self, memory_manager):

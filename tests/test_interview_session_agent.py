@@ -11,6 +11,7 @@ Covers:
 import pytest
 import tempfile
 import re
+from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 from datetime import datetime
@@ -295,7 +296,7 @@ class TestPrefilledProfileFlow:
 
             opening = await agent._start_profile_collection()
 
-            assert opening == "mock response"
+            assert "工作" in opening
             assert agent.phase == SessionPhase.PROFILE_COLLECTION
             assert agent.profile_agent.collected_info["name"] == "王秀兰"
             assert agent.profile_agent.collected_info["age"] == "78"
@@ -407,9 +408,15 @@ class TestGuidedInitialInterviewController:
             assert state["current_question_id"] == "childhood_parents"
 
     @pytest.mark.asyncio
-    async def test_advances_after_one_followup(self):
+    async def test_does_not_advance_after_one_followup(self):
         with tempfile.TemporaryDirectory() as tmpdir:
-            controller = self._controller(tmpdir)
+            controller = self._controller(tmpdir, {
+                "question": "您能再讲讲当时学吉他的细节吗？",
+                "source": "generated",
+                "candidate_question_id": None,
+                "guided_question_completed": False,
+                "move_to_next_guided_question": False,
+            })
             state = controller.ensure_state()
             state["current_question_followup_count"] = 1
             controller.save_state(state)
@@ -417,9 +424,37 @@ class TestGuidedInitialInterviewController:
             decision = await controller.generate_next(user_input="想不起来了。")
             state = controller.load_state()
 
+            assert "childhood_home" not in state["completed_question_ids"]
+            assert state["current_question_id"] == "childhood_home"
+            assert state["current_question_followup_count"] == 2
+            assert "学吉他" in decision.result.question
+
+    @pytest.mark.asyncio
+    async def test_advances_after_two_followups(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            controller = self._controller(tmpdir)
+            state = controller.ensure_state()
+            state["current_question_followup_count"] = 2
+            controller.save_state(state)
+            observation = MagicMock()
+            captured = {}
+
+            @contextmanager
+            def fake_observe_step(node, **kwargs):
+                captured["node"] = node
+                captured["kwargs"] = kwargs
+                yield observation
+
+            with patch("src.agents.guided_initial_interview_controller.observe_step", fake_observe_step):
+                decision = await controller.generate_next(user_input="想不起来了。")
+            state = controller.load_state()
+
             assert "childhood_home" in state["completed_question_ids"]
             assert state["current_question_id"] == "childhood_parents"
             assert "父母" in decision.result.question
+            assert captured["node"] == "guided.advance_to_next_question"
+            assert captured["kwargs"]["metadata"]["reason"] == "max_followups_reached"
+            observation.update.assert_called_once()
 
 
 # ============================================================

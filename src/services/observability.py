@@ -9,6 +9,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
+from time import perf_counter
 from typing import Any, Iterator, Optional
 from uuid import uuid4
 
@@ -151,7 +152,9 @@ def observability_context(context: ObservabilityContext) -> Iterator[Observabili
         trace_name=context.trace_name,
     ):
         with client.start_as_current_observation(
-            trace_context=context.trace_context(include_parent=False),
+            trace_context=context.trace_context(
+                include_parent=context.parent_observation_id is not None,
+            ),
             name=context.trace_name,
             as_type="span",
             metadata=context.root_metadata(),
@@ -169,6 +172,122 @@ def observability_context(context: ObservabilityContext) -> Iterator[Observabili
 
 def get_observability_context() -> Optional[ObservabilityContext]:
     return _CURRENT_CONTEXT.get()
+
+
+@dataclass
+class ApiObservation:
+    """Manual route-level observation that can outlive the route function.
+
+    SSE route handlers return an EventSourceResponse before the stream is fully
+    consumed, so this object is ended by the async generator after the last event
+    has been yielded.
+    """
+
+    agent: str
+    operation: str
+    route: str
+    user_id: Optional[str]
+    span: Any
+    started_perf: float
+    session_id: Optional[str] = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+    ended: bool = False
+
+    @property
+    def trace_id(self) -> str:
+        return self.span.trace_id
+
+    @property
+    def observation_id(self) -> str:
+        return self.span.id
+
+    def set_session_id(self, session_id: str) -> None:
+        self.session_id = session_id
+        self.metadata["session_id"] = session_id
+        self.span.update(metadata=self._metadata("running"))
+
+    def child_context(self, *, operation: Optional[str] = None, phase: Optional[str] = None) -> ObservabilityContext:
+        return ObservabilityContext(
+            agent=self.agent,
+            operation=operation or self.operation,
+            user_id=self.user_id,
+            session_id=self.session_id,
+            phase=phase,
+            trace_id=self.trace_id,
+            parent_observation_id=self.observation_id,
+            metadata={
+                "api_route": self.route,
+                "api_operation": self.operation,
+            },
+        )
+
+    def end(self, *, status: str = "completed", output: Optional[Any] = None, error: Optional[BaseException] = None) -> None:
+        if self.ended:
+            return
+
+        self.ended = True
+        elapsed_ms = round((perf_counter() - self.started_perf) * 1000, 3)
+        level = "ERROR" if error is not None or status == "failed" else None
+        status_message = str(error) if error is not None else None
+        final_output = output or {"status": status, "elapsed_ms": elapsed_ms}
+        self.span.update(
+            output=final_output,
+            metadata=self._metadata(status, elapsed_ms=elapsed_ms),
+            level=level,
+            status_message=status_message,
+        )
+        self.span.end()
+
+    def _metadata(self, status: str, *, elapsed_ms: Optional[float] = None) -> dict[str, Any]:
+        data = {
+            "agent": self.agent,
+            "operation": self.operation,
+            "route": self.route,
+            "user_id": self.user_id,
+            "session_id": self.session_id,
+            "api_status": status,
+            **self.metadata,
+        }
+        if elapsed_ms is not None:
+            data["api_elapsed_ms"] = elapsed_ms
+        return {k: v for k, v in data.items() if v is not None}
+
+
+def start_api_observation(
+    *,
+    agent: str,
+    operation: str,
+    route: str,
+    user_id: Optional[str] = None,
+    input: Optional[Any] = None,
+    metadata: Optional[dict[str, Any]] = None,
+) -> ApiObservation:
+    """Start a route-level observation for end-to-end API timing."""
+
+    client = get_client()
+    initial_metadata = {
+        "agent": agent,
+        "operation": operation,
+        "route": route,
+        "user_id": user_id,
+        **(metadata or {}),
+    }
+    span = client.start_observation(
+        trace_context={"trace_id": uuid4().hex},
+        name=f"api.{agent}.{operation}",
+        as_type="span",
+        input=input,
+        metadata={k: v for k, v in initial_metadata.items() if v is not None},
+    )
+    return ApiObservation(
+        agent=agent,
+        operation=operation,
+        route=route,
+        user_id=user_id,
+        span=span,
+        started_perf=perf_counter(),
+        metadata=dict(metadata or {}),
+    )
 
 
 @contextmanager

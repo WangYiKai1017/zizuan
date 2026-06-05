@@ -23,6 +23,9 @@ PHASE_LABELS = {
     PhaseType.ELDERLY: "老年时期（60岁以后）",
 }
 
+MEMORY_ORGANIZATION_MAX_TOKENS = 8192
+MEMORY_ORGANIZATION_FALLBACK_BATCH_SIZE = 1
+
 
 class MemoryManager:
     """
@@ -129,7 +132,77 @@ class MemoryManager:
         Returns:
             OrganizedMemory: 整理后的结构化记忆
         """
-        # 1. 格式化输入变量
+        # 1. 调用 LLM 整理
+        result, raw = await self._invoke_memory_organization(
+            turns,
+            current_phase,
+            trace_metadata={"mode": "full"},
+        )
+
+        if result is None and self._should_retry_in_batches(raw, turns):
+            logger.warning(
+                "Memory organization full pass failed, retrying in %s-turn batches: %s",
+                MEMORY_ORGANIZATION_FALLBACK_BATCH_SIZE,
+                raw.error if raw else "unknown error",
+            )
+            batched = OrganizedMemory.empty()
+            any_success = False
+
+            for batch_start in range(0, len(turns), MEMORY_ORGANIZATION_FALLBACK_BATCH_SIZE):
+                batch = turns[batch_start:batch_start + MEMORY_ORGANIZATION_FALLBACK_BATCH_SIZE]
+                batch_result, batch_raw = await self._invoke_memory_organization(
+                    batch,
+                    current_phase,
+                    trace_metadata={
+                        "mode": "fallback_batch",
+                        "batch_start": batch_start,
+                        "batch_size": len(batch),
+                    },
+                )
+                if batch_result is None:
+                    logger.error(
+                        "Memory organization fallback batch failed at %s: %s",
+                        batch_start,
+                        batch_raw.error if batch_raw else "unknown error",
+                    )
+                    continue
+
+                logger.info(
+                    "Memory organized fallback batch at %s: %s events, %s people",
+                    batch_start,
+                    len(batch_result.events),
+                    len(batch_result.people),
+                )
+                await self._apply_organized_memory(batch_result, batch)
+                self._merge_organized_memory(batched, batch_result)
+                any_success = True
+
+            if any_success:
+                logger.info(
+                    "Memory organized via fallback batches: %s events, %s people",
+                    len(batched.events),
+                    len(batched.people),
+                )
+                return batched
+
+        if result is None:
+            logger.error(f"Memory organization failed: {raw.error if raw else 'unknown error'}")
+            return OrganizedMemory.empty()
+
+        logger.info(f"Memory organized: {len(result.events)} events, {len(result.people)} people")
+
+        # 2. 按整理结果存储
+        await self._apply_organized_memory(result, turns)
+
+        return result
+
+    async def _invoke_memory_organization(
+        self,
+        turns: List[ConversationTurn],
+        current_phase: PhaseType,
+        trace_metadata: Optional[Dict[str, Any]] = None,
+    ):
+        """调用结构化记忆整理，并为长事件列表提供更大的输出上限。"""
         phase_instruction = (
             f"{PHASE_LABELS.get(current_phase, str(current_phase))}\n"
             "注意：请根据内容自动判断每个事件/记忆属于哪个人生阶段"
@@ -141,24 +214,43 @@ class MemoryManager:
             "existing_people": self._format_existing_people(),
             "current_phase": phase_instruction,
         }
-        
-        # 2. 调用 LLM 整理
+
+        configured_max_tokens = getattr(getattr(self.llm_service, "config", None), "max_tokens", 0)
+        if not isinstance(configured_max_tokens, int):
+            configured_max_tokens = 0
+        max_tokens = max(configured_max_tokens, MEMORY_ORGANIZATION_MAX_TOKENS)
+
         result, raw = await self.llm_service.invoke_structured(
             template_name="memory_organization",
             variables=variables,
             output_model=OrganizedMemory,
+            max_tokens=max_tokens,
+            trace_metadata=trace_metadata,
         )
-        
-        if result is None:
-            logger.error(f"Memory organization failed: {raw.error}")
-            return OrganizedMemory.empty()
-        
-        logger.info(f"Memory organized: {len(result.events)} events, {len(result.people)} people")
-        
-        # 3. 按整理结果存储
-        await self._apply_organized_memory(result, turns)
-        
-        return result
+        return result, raw
+
+    def _should_retry_in_batches(self, raw: Any, turns: List[ConversationTurn]) -> bool:
+        if len(turns) <= MEMORY_ORGANIZATION_FALLBACK_BATCH_SIZE:
+            return False
+        error = getattr(raw, "error", "") or ""
+        if "Unterminated string" in error or "JSON" in error or "Parse error" in error:
+            return True
+        return False
+
+    def _merge_organized_memory(
+        self,
+        target: OrganizedMemory,
+        source: OrganizedMemory,
+    ) -> None:
+        target.timeline_updates.extend(source.timeline_updates or [])
+        target.events.extend(source.events or [])
+        target.people.extend(source.people or [])
+        if source.profile_updates:
+            target.profile_updates = source.profile_updates
+        if source.storage_suggestions:
+            target.storage_suggestions = source.storage_suggestions
+        if source.processing_summary:
+            target.processing_summary = source.processing_summary
     
     def _normalize_link_path(self, path: str) -> str:
         """Normalize a stored file path into a wiki-link path relative to

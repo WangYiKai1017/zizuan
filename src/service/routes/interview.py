@@ -16,6 +16,7 @@ from src.service.schemas.requests import (
 from src.service.session_manager import SessionManager, AgentType, SessionConflictError
 from src.service.sse_response import SSEEmitter
 from src.service.agent_runners.interview_runner import InterviewRunner
+from src.services.observability import start_api_observation
 from src.storage.markdown_file_manager import MarkdownFileManager
 
 router = APIRouter(prefix="/interview", tags=["interview"])
@@ -134,26 +135,64 @@ async def prefill_interview_profile(request: InterviewProfilePrefillRequest):
 @router.post("/start")
 async def start_interview(request: UserIdRequest):
     """Start a new interview session. Returns SSE stream."""
-    session_manager = SessionManager.get_instance()
-
+    api_observation = start_api_observation(
+        agent="interview",
+        operation="start",
+        route="POST /interview/start",
+        user_id=request.user_id,
+        input={"user_id": request.user_id},
+    )
     try:
+        session_manager = SessionManager.get_instance()
         session_id = await session_manager.acquire(request.user_id, AgentType.INTERVIEW)
     except SessionConflictError as e:
+        api_observation.end(status="failed", error=e)
         raise HTTPException(status_code=409, detail={
             "error": {"code": "TASK_ALREADY_RUNNING", "message": str(e), "details": None}
         })
+    except Exception as ex:
+        api_observation.end(status="failed", error=ex)
+        raise
 
+    api_observation.set_session_id(session_id)
     emitter = SSEEmitter()
-    runner = InterviewRunner(user_id=request.user_id, session_id=session_id, emitter=emitter)
+    runner = InterviewRunner(
+        user_id=request.user_id,
+        session_id=session_id,
+        emitter=emitter,
+        trace_context=api_observation.child_context(operation="start"),
+    )
 
     async def generate():
+        status = "completed"
+        error = None
         try:
-            await runner.start()
+            try:
+                await runner.start()
+            except Exception as ex:
+                status = "failed"
+                error = ex
+                await emitter.emit_error("AGENT_ERROR", str(ex), recoverable=False)
+                await emitter.emit_done("启动失败")
+            async for chunk in emitter.stream():
+                yield chunk
+        except asyncio.CancelledError:
+            status = "cancelled"
+            raise
         except Exception as ex:
-            await emitter.emit_error("AGENT_ERROR", str(ex), recoverable=False)
-            await emitter.emit_done("启动失败")
-        async for chunk in emitter.stream():
-            yield chunk
+            status = "failed"
+            error = ex
+            raise
+        finally:
+            api_observation.end(
+                status=status,
+                error=error,
+                output={
+                    "status": status,
+                    "events_emitted": emitter.emitted_count,
+                    "events_sent": emitter.sent_count,
+                },
+            )
 
     return EventSourceResponse(generate())
 
@@ -161,36 +200,75 @@ async def start_interview(request: UserIdRequest):
 @router.post("/message")
 async def send_message(request: InterviewMessageRequest):
     """Send a message in an existing interview session. Returns SSE stream."""
-    session_manager = SessionManager.get_instance()
-    session = await session_manager.get_active_session(request.user_id)
+    api_observation = start_api_observation(
+        agent="interview",
+        operation="message",
+        route="POST /interview/message",
+        user_id=request.user_id,
+        input={"user_id": request.user_id, "session_id": request.session_id},
+    )
+    try:
+        session_manager = SessionManager.get_instance()
+        session = await session_manager.get_active_session(request.user_id)
 
-    if not session or session.agent_type != AgentType.INTERVIEW:
-        raise HTTPException(status_code=404, detail={
-            "error": {"code": "SESSION_NOT_FOUND", "message": "会话不存在", "details": None}
-        })
+        if not session or session.agent_type != AgentType.INTERVIEW:
+            raise HTTPException(status_code=404, detail={
+                "error": {"code": "SESSION_NOT_FOUND", "message": "会话不存在", "details": None}
+            })
 
-    if session.session_id != request.session_id:
-        raise HTTPException(status_code=404, detail={
-            "error": {"code": "SESSION_NOT_FOUND", "message": "会话ID不匹配", "details": None}
-        })
+        if session.session_id != request.session_id:
+            raise HTTPException(status_code=404, detail={
+                "error": {"code": "SESSION_NOT_FOUND", "message": "会话ID不匹配", "details": None}
+            })
 
-    emitter = SSEEmitter()
-    runner = InterviewRunner(user_id=request.user_id, session_id=request.session_id, emitter=emitter)
+        api_observation.set_session_id(request.session_id)
+        emitter = SSEEmitter()
+        runner = InterviewRunner(
+            user_id=request.user_id,
+            session_id=request.session_id,
+            emitter=emitter,
+            trace_context=api_observation.child_context(operation="message"),
+        )
+    except Exception as ex:
+        api_observation.end(status="failed", error=ex)
+        raise
 
     async def generate():
+        status = "completed"
+        error = None
         try:
-            candidate_questions = None
-            if request.candidate_questions:
-                candidate_questions = [
-                    {"id": cq.id, "question": cq.question}
-                    for cq in request.candidate_questions
-                ]
-            await runner.handle_message(request.message, candidate_questions=candidate_questions)
+            try:
+                candidate_questions = None
+                if request.candidate_questions:
+                    candidate_questions = [
+                        {"id": cq.id, "question": cq.question}
+                        for cq in request.candidate_questions
+                    ]
+                await runner.handle_message(request.message, candidate_questions=candidate_questions)
+            except Exception as ex:
+                status = "failed"
+                error = ex
+                await emitter.emit_error("AGENT_ERROR", str(ex), recoverable=False)
+                await emitter.emit_done()
+            async for chunk in emitter.stream():
+                yield chunk
+        except asyncio.CancelledError:
+            status = "cancelled"
+            raise
         except Exception as ex:
-            await emitter.emit_error("AGENT_ERROR", str(ex), recoverable=False)
-            await emitter.emit_done()
-        async for chunk in emitter.stream():
-            yield chunk
+            status = "failed"
+            error = ex
+            raise
+        finally:
+            api_observation.end(
+                status=status,
+                error=error,
+                output={
+                    "status": status,
+                    "events_emitted": emitter.emitted_count,
+                    "events_sent": emitter.sent_count,
+                },
+            )
 
     return EventSourceResponse(generate())
 

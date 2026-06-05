@@ -15,13 +15,14 @@ import logging
 
 from src.config.initial_interview_questions import INITIAL_INTERVIEW_QUESTIONS
 from src.services.llm_service import LLMService
+from src.services.observability import observe_step
 from src.services.question_generator import QuestionResult
 
 logger = logging.getLogger(__name__)
 
 
 GUIDED_STATE_FILENAME = "guided_initial_state.json"
-MAX_FOLLOWUPS_PER_GUIDED_QUESTION = 1
+MAX_FOLLOWUPS_PER_GUIDED_QUESTION = 2
 
 
 @dataclass
@@ -152,7 +153,33 @@ class GuidedInitialInterviewController:
             )
 
         if state.get("current_question_followup_count", 0) >= MAX_FOLLOWUPS_PER_GUIDED_QUESTION:
-            result = self._advance_to_next_question(state, address_style)
+            before_state = dict(state)
+            with observe_step(
+                "guided.advance_to_next_question",
+                as_type="tool",
+                input={
+                    "reason": "max_followups_reached",
+                    "state": before_state,
+                    "current_question": current_question,
+                    "max_followups": MAX_FOLLOWUPS_PER_GUIDED_QUESTION,
+                },
+                metadata={
+                    "reason": "max_followups_reached",
+                    "current_question_id": current_question.get("id") if current_question else None,
+                    "followup_count": before_state.get("current_question_followup_count", 0),
+                },
+            ) as observation:
+                result = self._advance_to_next_question(state, address_style)
+                if observation is not None:
+                    observation.update(output={
+                        "question": result.question,
+                        "source": result.source,
+                        "candidate_question_id": result.candidate_question_id,
+                        "topic_switched": result.topic_switched,
+                        "new_topic": result.new_topic,
+                        "guided_completed": state.get("guided_completed", False),
+                        "next_question_id": state.get("current_question_id"),
+                    })
             return GuidedDecision(result=result, guided_completed=state.get("guided_completed", False))
 
         prompt = self._build_prompt(

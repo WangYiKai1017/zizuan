@@ -4,6 +4,7 @@ from src.services.llm_service import LLMService, LLMCallResult
 from src.services.observability import ObservabilityContext, observability_context
 from src.config.llm_config import LLMConfig
 from src.models import EmotionResult
+from src.prompts.base import PromptTemplate
 
 
 class TestLLMService:
@@ -172,6 +173,39 @@ class TestLLMService:
             assert result is not None
             assert result.emotion_type == "neutral"
             assert result.intensity == "low"
+
+    @pytest.mark.asyncio
+    async def test_invoke_structured_does_not_mutate_template(self, llm_service):
+        """结构化调用不应把首次渲染后的变量固化到模板里。"""
+        llm_service._prompt_templates["mutable_probe"] = PromptTemplate(
+            name="mutable_probe",
+            system_prompt="用户输入：$user_input",
+            user_template="",
+        )
+        original_prompt = llm_service._prompt_templates["mutable_probe"].system_prompt
+
+        with patch.object(llm_service, 'invoke', new_callable=AsyncMock) as mock_invoke:
+            mock_invoke.return_value = LLMCallResult(
+                success=True,
+                content='{"emotion_type": "neutral", "intensity": "low", "valence": "neutral", "confidence": 0.5}',
+            )
+
+            await llm_service.invoke_structured(
+                template_name="mutable_probe",
+                variables={"user_input": "第一次"},
+                output_model=EmotionResult,
+            )
+            await llm_service.invoke_structured(
+                template_name="mutable_probe",
+                variables={"user_input": "第二次"},
+                output_model=EmotionResult,
+            )
+
+        assert llm_service._prompt_templates["mutable_probe"].system_prompt == original_prompt
+        first_call = mock_invoke.await_args_list[0].kwargs
+        second_call = mock_invoke.await_args_list[1].kwargs
+        assert first_call["system_prompt"] == "用户输入：第一次"
+        assert second_call["system_prompt"] == "用户输入：第二次"
     
     def test_get_stats(self, llm_service):
         """测试统计信息"""

@@ -38,6 +38,8 @@ class SSEEmitter:
     def __init__(self):
         self._queue: asyncio.Queue[Optional[SSEEvent]] = asyncio.Queue()
         self._closed = False
+        self.emitted_count = 0
+        self.sent_count = 0
     
     async def emit(self, event: str, data: Dict[str, Any]) -> None:
         """Emit an SSE event. Automatically adds timestamp if not present."""
@@ -46,6 +48,7 @@ class SSEEmitter:
         if "timestamp" not in data:
             data["timestamp"] = datetime.now(timezone.utc).astimezone().isoformat()
         await self._queue.put(SSEEvent(event=event, data=data))
+        self.emitted_count += 1
     
     async def emit_error(self, code: str, message: str, recoverable: bool = False) -> None:
         """Emit an error event."""
@@ -67,4 +70,5 @@ class SSEEmitter:
             event = await self._queue.get()
             if event is None:
                 break
+            self.sent_count += 1
             yield JSONServerSentEvent(data=event.data, event=event.event)

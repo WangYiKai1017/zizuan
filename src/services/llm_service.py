@@ -405,8 +405,9 @@ class LLMService:
         
         template = self._prompt_templates[template_name]
         
-        # 渲染Prompt
-        template.system_prompt = template.render(**variables)
+        # 渲染Prompt。不要修改缓存里的 PromptTemplate，否则第一次
+        # 结构化调用会污染后续同名模板调用的上下文。
+        rendered_system_prompt = template.render(**variables)
         
         # 构建结构化输出的Prompt
         structured_prompt = f"""
@@ -424,7 +425,7 @@ class LLMService:
 
         result = await self.invoke(
             prompt=structured_prompt,
-            system_prompt=template.system_prompt,
+            system_prompt=rendered_system_prompt,
             trace_node=trace_node or template_name,
             trace_run_name=trace_run_name,
             trace_tags=trace_tags,

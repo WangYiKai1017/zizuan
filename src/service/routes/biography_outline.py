@@ -11,6 +11,7 @@ from src.service.schemas.requests import UserIdRequest, ChapterConfirmRequest
 from src.service.session_manager import SessionManager, AgentType, SessionConflictError
 from src.service.sse_response import SSEEmitter
 from src.service.agent_runners.outline_runner import OutlineRunner
+from src.services.observability import start_api_observation
 
 router = APIRouter(prefix="/biography/outline", tags=["biography-outline"])
 
@@ -33,30 +34,67 @@ def _validate_user_kb(user_id: str) -> None:
 @router.post("/generate")
 async def generate_outline(request: UserIdRequest):
     """Generate or update biography outline. Returns SSE stream."""
-    _validate_user_kb(request.user_id)
-
-    session_manager = SessionManager.get_instance()
-
+    api_observation = start_api_observation(
+        agent="biography_outline",
+        operation="generate",
+        route="POST /biography/outline/generate",
+        user_id=request.user_id,
+        input={"user_id": request.user_id},
+    )
     try:
+        _validate_user_kb(request.user_id)
+        session_manager = SessionManager.get_instance()
         session_id = await session_manager.acquire(request.user_id, AgentType.BIOGRAPHY_OUTLINE)
     except SessionConflictError as e:
+        api_observation.end(status="failed", error=e)
         raise HTTPException(status_code=409, detail={
             "error": {"code": "TASK_ALREADY_RUNNING", "message": str(e), "details": None}
         })
+    except Exception as ex:
+        api_observation.end(status="failed", error=ex)
+        raise
 
+    api_observation.set_session_id(session_id)
     emitter = SSEEmitter()
-    runner = OutlineRunner(user_id=request.user_id, session_id=session_id, emitter=emitter)
+    runner = OutlineRunner(
+        user_id=request.user_id,
+        session_id=session_id,
+        emitter=emitter,
+        trace_context=api_observation.child_context(operation="generate"),
+    )
 
     async def generate():
+        status = "completed"
+        error = None
         try:
-            await runner.run()
+            try:
+                await runner.run()
+            except Exception as ex:
+                status = "failed"
+                error = ex
+                await emitter.emit_error("AGENT_ERROR", str(ex), recoverable=False)
+                await emitter.emit_done("任务失败")
+            finally:
+                await session_manager.release(request.user_id, session_id)
+            async for chunk in emitter.stream():
+                yield chunk
+        except asyncio.CancelledError:
+            status = "cancelled"
+            raise
         except Exception as ex:
-            await emitter.emit_error("AGENT_ERROR", str(ex), recoverable=False)
-            await emitter.emit_done("任务失败")
+            status = "failed"
+            error = ex
+            raise
         finally:
-            await session_manager.release(request.user_id, session_id)
-        async for chunk in emitter.stream():
-            yield chunk
+            api_observation.end(
+                status=status,
+                error=error,
+                output={
+                    "status": status,
+                    "events_emitted": emitter.emitted_count,
+                    "events_sent": emitter.sent_count,
+                },
+            )
 
     return EventSourceResponse(generate())
 

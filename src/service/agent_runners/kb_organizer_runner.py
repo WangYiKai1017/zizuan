@@ -1,5 +1,7 @@
 """KB Organizer agent runner — wraps KBOrganizerAgent for SSE streaming."""
+import json
 import shutil
+from datetime import datetime, timezone
 from pathlib import Path
 
 from src.service.agent_runners.base_runner import BaseAgentRunner
@@ -8,7 +10,7 @@ from src.agents.kb_organizer_agent import KBOrganizerAgent
 from src.config.llm_config import get_default_config
 from src.services.llm_service import LLMService
 from src.services.kb_organization_service import KBOrganizationService
-from src.services.observability import ObservabilityContext, observability_context, observe_step
+from src.services.observability import observability_context, observe_step
 from src.storage.file_operations import FileOperations
 from src.storage.markdown_file_manager import MarkdownFileManager
 
@@ -51,16 +53,26 @@ class KBOrganizerRunner(BaseAgentRunner):
             organization_service=service,
         )
 
+    def _save_result(self, status: str, payload: dict) -> None:
+        """Persist the latest organizer result for the result endpoint."""
+        result_path = Path(self._get_kb_path()) / ".kb_organizer_result.json"
+        data = {
+            "user_id": self.user_id,
+            "session_id": self.session_id,
+            "status": status,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+            **payload,
+        }
+        result_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
     async def run(self) -> None:
         """Execute KB organizer with SSE events."""
         target_path = self._get_kb_path()
 
         try:
-            with observability_context(ObservabilityContext(
+            with observability_context(self.build_trace_context(
                 agent="kb_organizer",
                 operation="run",
-                user_id=self.user_id,
-                session_id=self.session_id,
             )):
                 agent = self._create_agent(target_path)
 
@@ -99,14 +111,21 @@ class KBOrganizerRunner(BaseAgentRunner):
             if hasattr(result, 'link_redirect_map'):
                 summary["link_redirect_map"] = result.link_redirect_map
 
+            result_payload = {
+                "iteration_count": getattr(result, 'iteration_count', 1),
+                "summary": summary,
+            }
+            self._save_result("completed", result_payload)
+
             await self.emitter.emit("task_completed", {
                 "status": "completed",
-                "iteration_count": getattr(result, 'iteration_count', 1),
+                "iteration_count": result_payload["iteration_count"],
                 "summary": summary,
             })
             await self.emitter.emit_done("知识库整理完成")
 
         except Exception as e:
+            self._save_result("failed", {"error": str(e)})
             await self.emitter.emit("failed", {
                 "status": "failed",
                 "error_code": "AGENT_ERROR",

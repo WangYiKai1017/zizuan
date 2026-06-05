@@ -11,18 +11,43 @@ from src.services.observability import ObservabilityContext, observability_conte
 class InterviewRunner:
     """Manages interview sessions with SSE event emission."""
 
-    def __init__(self, user_id: str, session_id: str, emitter: SSEEmitter):
+    def __init__(
+        self,
+        user_id: str,
+        session_id: str,
+        emitter: SSEEmitter,
+        trace_context: ObservabilityContext | None = None,
+    ):
         self.user_id = user_id
         self.session_id = session_id
         self.emitter = emitter
+        self.trace_context = trace_context
+
+    def _build_trace_context(self, *, operation: str, phase: str | None = None) -> ObservabilityContext:
+        if self.trace_context is not None:
+            return ObservabilityContext(
+                agent="interview",
+                operation=operation,
+                user_id=self.user_id,
+                session_id=self.session_id,
+                phase=phase,
+                trace_id=self.trace_context.trace_id,
+                parent_observation_id=self.trace_context.parent_observation_id,
+                tags=self.trace_context.tags,
+                metadata=dict(self.trace_context.metadata),
+            )
+        return ObservabilityContext(
+            agent="interview",
+            operation=operation,
+            user_id=self.user_id,
+            session_id=self.session_id,
+            phase=phase,
+        )
 
     async def start(self) -> None:
         """Start a new interview session. Emits session_started + agent_message."""
-        with observability_context(ObservabilityContext(
-            agent="interview",
+        with observability_context(self._build_trace_context(
             operation="start",
-            user_id=self.user_id,
-            session_id=self.session_id,
         )):
             # Create InterviewSessionAgent
             llm_service = get_llm_service()
@@ -65,11 +90,8 @@ class InterviewRunner:
         # Track phase before handling
         phase_before = agent.phase
 
-        with observability_context(ObservabilityContext(
-            agent="interview",
+        with observability_context(self._build_trace_context(
             operation="message",
-            user_id=self.user_id,
-            session_id=self.session_id,
             phase=phase_before.value if hasattr(phase_before, 'value') else str(phase_before),
         )):
             # Process message
@@ -103,11 +125,8 @@ class InterviewRunner:
         ending_message = ""
         archived = False
         if agent is not None:
-            with observability_context(ObservabilityContext(
-                agent="interview",
+            with observability_context(self._build_trace_context(
                 operation="end",
-                user_id=self.user_id,
-                session_id=self.session_id,
                 phase=agent.phase.value if hasattr(agent.phase, 'value') else str(agent.phase),
             )):
                 ending_message = await agent.end_session()
