@@ -414,6 +414,7 @@
   <button data-tab="prefill"><i data-lucide="id-card"></i>画像预填</button>
   <button data-tab="interview"><i data-lucide="messages-square"></i>对话采访</button>
   <button data-tab="kb"><i data-lucide="database-zap"></i>知识库整理</button>
+  <button data-tab="stories"><i data-lucide="book-marked"></i>故事生成</button>
   <button data-tab="outline"><i data-lucide="list-tree"></i>大纲生成</button>
   <button data-tab="writing"><i data-lucide="pen-line"></i>传记写作</button>
   <button data-tab="files"><i data-lucide="folder-tree"></i>文件浏览</button>
@@ -430,9 +431,10 @@
           <div class="step" data-step="prefill"><span class="num">2</span><div><div class="step-title">画像预填</div><div class="step-desc">写入微信侧姓名、年龄、出生日期、性别</div></div><span class="badge">待预填</span></div>
           <div class="step" data-step="interview"><span class="num">3</span><div><div class="step-title">采访会话</div><div class="step-desc">启动会话、发送消息、结束并保存素材</div></div><span class="badge">待开始</span></div>
           <div class="step" data-step="kb"><span class="num">4</span><div><div class="step-title">知识库整理</div><div class="step-desc">运行去重、冲突检测、链接修复等整理任务</div></div><span class="badge">待运行</span></div>
-          <div class="step" data-step="outline"><span class="num">5</span><div><div class="step-title">大纲生成</div><div class="step-desc">扫描材料并生成传记章节大纲</div></div><span class="badge">待生成</span></div>
-          <div class="step" data-step="confirm"><span class="num">6</span><div><div class="step-title">确认章节</div><div class="step-desc">将 draft 章节标记为 confirmed，写作 Agent 才会处理</div></div><span class="badge">待确认</span></div>
-          <div class="step" data-step="writing"><span class="num">7</span><div><div class="step-title">传记写作</div><div class="step-desc">生成章节文件并合并完整传记</div></div><span class="badge">待写作</span></div>
+          <div class="step" data-step="stories"><span class="num">5</span><div><div class="step-title">故事生成</div><div class="step-desc">每满 15 个未消费事件生成一篇故事</div></div><span class="badge">待生成</span></div>
+          <div class="step" data-step="outline"><span class="num">6</span><div><div class="step-title">大纲生成</div><div class="step-desc">扫描材料并生成传记章节大纲</div></div><span class="badge">待生成</span></div>
+          <div class="step" data-step="confirm"><span class="num">7</span><div><div class="step-title">确认章节</div><div class="step-desc">将 draft 章节标记为 confirmed，写作 Agent 才会处理</div></div><span class="badge">待确认</span></div>
+          <div class="step" data-step="writing"><span class="num">8</span><div><div class="step-title">传记写作</div><div class="step-desc">生成章节文件并合并完整传记</div></div><span class="badge">待写作</span></div>
         </div>
       </div>
       <div class="card">
@@ -444,6 +446,10 @@
         <div class="actions">
           <button onclick="selectTab('interview')"><i data-lucide="message-circle-plus"></i>开始采访</button>
           <button onclick="runKBOrganizer()"><i data-lucide="combine"></i>运行整理</button>
+        </div>
+        <div class="actions">
+          <button onclick="runStoryGeneration()"><i data-lucide="book-marked"></i>生成故事</button>
+          <button onclick="openStoriesFolder()"><i data-lucide="folder-open"></i>查看故事</button>
         </div>
         <div class="actions">
           <button onclick="generateOutline()"><i data-lucide="sparkles"></i>生成大纲</button>
@@ -539,6 +545,19 @@
       </div>
       <div id="outlineLog" class="log"></div>
       <div id="outlineChapters" style="margin-top:10px;"></div>
+    </div>
+  </div>
+
+  <div id="panel-stories" class="panel">
+    <div class="card">
+      <div class="row">
+        <h3 class="spacer">故事生成</h3>
+        <button class="primary" id="storyRunBtn" onclick="runStoryGeneration()"><i data-lucide="book-marked"></i>生成故事</button>
+        <button onclick="openStoriesFolder()"><i data-lucide="folder-open"></i>查看 stories/</button>
+        <span id="storySpinner" class="spinner"></span>
+      </div>
+      <p class="hint">从最早的 15 个未消费 event 生成一篇第一人称故事；生成后可在文件浏览里查看 stories/。</p>
+      <div id="storyLog" class="log"></div>
     </div>
   </div>
 
@@ -906,6 +925,58 @@ async function runKBOrganizer() {
   }
 }
 
+async function runStoryGeneration() {
+  selectTab('stories');
+  const log = $('#storyLog');
+  log.innerHTML = '';
+  $('#storyRunBtn').disabled = true;
+  $('#storySpinner').style.display = 'inline-block';
+  setStep('stories', 'current', '生成中');
+  logLine(log, 'info', '启动故事生成...');
+  try {
+    await ensureBackend('故事生成');
+    for await (const ev of sseStream(api() + '/api/stories/generate', { user_id: uid() })) {
+      if (ev.event === 'task_started') {
+        logLine(log, 'info', `任务已启动，需要 ${ev.data.required_event_count ?? 15} 个事件`);
+      } else if (ev.event === 'scanning') {
+        logLine(log, 'info', ev.data.message || `可用事件：${ev.data.available_events ?? '?'}`);
+      } else if (ev.event === 'generating') {
+        logLine(log, 'progress', ev.data.message || '故事生成中');
+        const paths = ev.data.selected_event_paths || [];
+        if (paths.length) logLine(log, 'info', '本次来源：' + paths.join(', '));
+      } else if (ev.event === 'saved') {
+        logLine(log, 'success', `已保存 ${ev.data.story_path || ev.data.story_id || ''}`);
+      } else if (ev.event === 'completed') {
+        logLine(log, 'success', `完成：${ev.data.story_path}，消费 ${ev.data.consumed_event_count ?? 15} 个事件，剩余 ${ev.data.remaining_event_count ?? 0} 个`);
+        setStep('stories', 'done', '已生成');
+      } else if (ev.event === 'failed' || ev.event === 'error') {
+        logLine(log, 'error', getErrorMessage(ev.data, '生成失败'));
+        if (ev.data.story_path) logLine(log, 'info', '已保存文件：' + ev.data.story_path);
+        setStep('stories', 'error', '失败');
+      } else if (ev.event === 'done') {
+        logLine(log, 'info', ev.data.message || '流结束');
+      }
+    }
+    await loadFileTree();
+  } catch (e) {
+    logLine(log, 'error', e.message);
+    setStep('stories', 'error', '失败');
+  } finally {
+    $('#storyRunBtn').disabled = false;
+    $('#storySpinner').style.display = 'none';
+  }
+}
+
+async function openStoriesFolder() {
+  selectTab('files');
+  await loadFileTree();
+  try {
+    await loadFileContent('stories/');
+  } catch (e) {
+    $('#fileContent').innerHTML = `<div class="line error">${esc(e.message)}</div>`;
+  }
+}
+
 async function generateOutline() {
   selectTab('outline');
   const log = $('#outlineLog');
@@ -1132,6 +1203,12 @@ async function loadFileContent(path) {
     const r = await fetch(api() + '/api/files/' + encodeURIComponent(uid()) + '/' + encodedPath(path));
     if (!r.ok) throw new Error(await parseResponseError(r));
     const data = await r.json();
+    if (data.type === 'directory') {
+      const items = data.items || [];
+      $('#fileContent').innerHTML = `<h4>${esc(data.path || path)} <span class="badge">${items.length} 项</span></h4>` +
+        items.map(item => `<div class="outline-chapter"><span class="chapter-title">${esc(item.path)}</span><span class="badge">${esc(item.type)}</span></div>`).join('');
+      return;
+    }
     $('#fileContent').innerHTML = `<h4>${esc(data.filename)} <span class="badge">${data.size} 字节</span></h4><pre class="content">${esc(data.content || '')}</pre>`;
   } catch (e) {
     $('#fileContent').innerHTML = `<div class="line error">${esc(e.message)}</div>`;

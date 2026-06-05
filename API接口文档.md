@@ -504,11 +504,69 @@ data: {"message": "知识库整理完成"}
 
 ---
 
-## 五、传记大纲 Agent 接口（任务式）
+## 五、故事生成接口（任务式）
+
+故事生成接口由前端触发。每次从用户知识库中选择最早的 15 个未消费事件生成一篇第一人称故事；故事生成并保存成功后，这 15 个事件会写入 `stories/.story_state.json`，下次不再计入数量。
+
+### 5.1 生成故事
+
+**POST** `/api/stories/generate`
+
+**请求体：**
+
+```json
+{
+  "user_id": "test_user002"
+}
+```
+
+**响应：** SSE 流
+
+```
+event: task_started
+data: {"user_id": "test_user002", "required_event_count": 15, "timestamp": "2026-06-05T10:00:00+08:00"}
+
+event: scanning
+data: {"step": "scanning", "message": "扫描到 18 个未生成故事的事件", "available_events": 18, "required_events": 15, "timestamp": "2026-06-05T10:00:01+08:00"}
+
+event: generating
+data: {"step": "generating", "message": "正在根据最早的 15 个事件生成故事...", "selected_event_count": 15, "selected_event_paths": ["events/childhood/出生.md"], "timestamp": "2026-06-05T10:00:02+08:00"}
+
+event: saved
+data: {"step": "saved", "message": "故事已保存，事件消费状态已更新", "story_id": "story_20260605_100030", "story_path": "stories/story_20260605_100030.md", "consumed_event_count": 15, "timestamp": "2026-06-05T10:00:30+08:00"}
+
+event: completed
+data: {"status": "completed", "story_id": "story_20260605_100030", "story_path": "stories/story_20260605_100030.md", "consumed_event_count": 15, "remaining_event_count": 3, "timestamp": "2026-06-05T10:00:31+08:00"}
+
+event: done
+data: {"message": "故事生成完成"}
+```
+
+**事件不足 15 个：**
+
+```
+event: failed
+data: {"status": "failed", "error_code": "INSUFFICIENT_EVENTS", "message": "未生成故事的事件不足15个", "available_events": 12, "required_events": 15, "timestamp": "2026-06-05T10:00:01+08:00"}
+
+event: done
+data: {"message": "任务失败"}
+```
+
+**说明：**
+
+- 生成物保存到 `knowledge_base/{user_id}/stories/story_YYYYMMDD_HHMMSS.md`。
+- 故事正文不在 `completed` 事件中返回；前端可通过文件接口读取。
+- 消费状态保存到 `stories/.story_state.json`，第一版仅按 `event_path` 判断是否已消费；事件被改名、移动或重写后会被视为新事件。
+- 故事文件末尾会以注释形式保留来源事件路径，便于排查和溯源。
+- 若故事文件已保存但状态索引保存失败，会返回 `STATE_SAVE_FAILED`，不发送 `completed`。
+
+---
+
+## 六、传记大纲 Agent 接口（任务式）
 
 传记大纲 Agent 扫描知识库材料，自动生成或增量更新传记章节大纲。
 
-### 5.1 生成/更新大纲
+### 6.1 生成/更新大纲
 
 **POST** `/api/biography/outline/generate`
 
@@ -571,7 +629,7 @@ data: {"message": "无需更新"}
 
 ---
 
-### 5.2 获取当前大纲
+### 6.2 获取当前大纲
 
 **GET** `/api/biography/outline/{user_id}`
 
@@ -621,7 +679,7 @@ data: {"message": "无需更新"}
 
 ---
 
-### 5.3 确认章节
+### 6.3 确认章节
 
 **PUT** `/api/biography/outline/{user_id}/chapters/{chapter_id}/confirm`
 
@@ -659,7 +717,7 @@ data: {"message": "无需更新"}
 
 ---
 
-### 5.4 章节状态枚举
+### 6.4 章节状态枚举
 
 | 值 | 说明 | 可转换至 |
 |----|------|----------|
@@ -670,11 +728,11 @@ data: {"message": "无需更新"}
 
 ---
 
-## 六、传记写作 Agent 接口（任务式）
+## 七、传记写作 Agent 接口（任务式）
 
 传记写作 Agent 根据已确认的大纲章节逐章写作，并合并为完整传记。
 
-### 6.1 启动写作任务
+### 7.1 启动写作任务
 
 **POST** `/api/biography/writing/run`
 
@@ -745,7 +803,7 @@ data: {"message": "传记写作完成"}
 
 ---
 
-### 6.2 获取章节列表
+### 7.2 获取章节列表
 
 **GET** `/api/biography/writing/{user_id}/chapters`
 
@@ -785,7 +843,7 @@ data: {"message": "传记写作完成"}
 
 ---
 
-### 6.3 获取完整传记
+### 7.3 获取完整传记
 
 **GET** `/api/biography/writing/{user_id}/full`
 
@@ -807,11 +865,11 @@ data: {"message": "传记写作完成"}
 
 ---
 
-## 七、文件服务接口
+## 八、文件服务接口
 
 文件服务提供对用户知识库目录的只读访问，支持浏览目录结构和读取文件内容。
 
-### 7.1 列出文件目录
+### 8.1 列出文件目录
 
 **GET** `/api/files/{user_id}`
 
@@ -837,7 +895,7 @@ data: {"message": "传记写作完成"}
 
 ---
 
-### 7.2 获取文件内容
+### 8.2 获取文件内容
 
 **GET** `/api/files/{user_id}/{path}`
 
@@ -883,7 +941,7 @@ GET /api/files/test_user002/events/childhood/
 
 ---
 
-### 7.3 获取完整目录树
+### 8.3 获取完整目录树
 
 **GET** `/api/files/{user_id}/tree`
 
@@ -978,9 +1036,9 @@ GET /api/files/test_user002/events/childhood/
 
 ---
 
-## 八、SSE 事件格式规范
+## 九、SSE 事件格式规范
 
-### 8.1 任务式 Agent 通用事件类型
+### 9.1 任务式 Agent 通用事件类型
 
 | 事件类型 | 说明 | 触发时机 |
 |----------|------|----------|
@@ -999,7 +1057,7 @@ GET /api/files/test_user002/events/childhood/
 | `error` | 错误 | 运行时出错 |
 | `done` | 流结束 | SSE 连接即将关闭 |
 
-### 8.2 交互式 Agent 事件类型
+### 9.2 交互式 Agent 事件类型
 
 | 事件类型 | 说明 | 触发时机 |
 |----------|------|----------|
@@ -1009,7 +1067,7 @@ GET /api/files/test_user002/events/childhood/
 | `session_ended` | 会话结束 | 会话正常结束时 |
 | `error` | 错误 | 运行时出错 |
 
-### 8.3 事件详细格式示例
+### 9.3 事件详细格式示例
 
 #### task_started
 
@@ -1060,7 +1118,7 @@ event: done
 data: {"message": "流结束"}
 ```
 
-### 8.4 前端 SSE 连接示例
+### 9.4 前端 SSE 连接示例
 
 ```javascript
 // 任务式 Agent 调用示例
@@ -1122,9 +1180,9 @@ function handleEvent(eventType, data) {
 
 ---
 
-## 九、数据模型
+## 十、数据模型
 
-### 9.1 OutlineDocument（大纲文档）
+### 10.1 OutlineDocument（大纲文档）
 
 ```json
 {
@@ -1137,7 +1195,7 @@ function handleEvent(eventType, data) {
 }
 ```
 
-### 9.2 ChapterEntry（章节条目）
+### 10.2 ChapterEntry（章节条目）
 
 ```json
 {
@@ -1153,7 +1211,7 @@ function handleEvent(eventType, data) {
 }
 ```
 
-### 9.3 OrganizerTask（整理任务）
+### 10.3 OrganizerTask（整理任务）
 
 ```json
 {
@@ -1168,7 +1226,7 @@ function handleEvent(eventType, data) {
 }
 ```
 
-### 9.4 MergeRecord（合并记录）
+### 10.4 MergeRecord（合并记录）
 
 ```json
 {
@@ -1180,7 +1238,7 @@ function handleEvent(eventType, data) {
 }
 ```
 
-### 9.5 ConflictItem（矛盾问题）
+### 10.5 ConflictItem（矛盾问题）
 
 ```json
 {
@@ -1194,7 +1252,7 @@ function handleEvent(eventType, data) {
 }
 ```
 
-### 9.6 SessionState（采访会话状态）
+### 10.6 SessionState（采访会话状态）
 
 ```json
 {
@@ -1213,7 +1271,7 @@ function handleEvent(eventType, data) {
 }
 ```
 
-### 9.7 OutlineChange（大纲变更记录）
+### 10.7 OutlineChange（大纲变更记录）
 
 ```json
 {
@@ -1224,7 +1282,7 @@ function handleEvent(eventType, data) {
 }
 ```
 
-### 9.8 ChapterTask（写作任务项）
+### 10.8 ChapterTask（写作任务项）
 
 ```json
 {
@@ -1249,6 +1307,7 @@ function handleEvent(eventType, data) {
 | GET | `/api/interview/status/{user_id}/{session_id}` | JSON | 获取会话状态 |
 | POST | `/api/kb-organizer/run` | SSE | 启动知识库整理 |
 | GET | `/api/kb-organizer/result/{user_id}` | JSON | 获取整理结果 |
+| POST | `/api/stories/generate` | SSE | 生成一篇故事并消费 15 个事件 |
 | POST | `/api/biography/outline/generate` | SSE | 生成/更新大纲 |
 | GET | `/api/biography/outline/{user_id}` | JSON | 获取当前大纲 |
 | PUT | `/api/biography/outline/{user_id}/chapters/{chapter_id}/confirm` | JSON | 确认章节 |

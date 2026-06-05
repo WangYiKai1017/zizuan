@@ -17,6 +17,7 @@ class AgentType(str, Enum):
     KB_ORGANIZER = "kb_organizer"
     BIOGRAPHY_OUTLINE = "biography_outline"
     BIOGRAPHY_WRITING = "biography_writing"
+    STORY_GENERATION = "story_generation"
 
 
 class ActiveSession(BaseModel):
