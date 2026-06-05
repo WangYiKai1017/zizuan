@@ -14,6 +14,10 @@
 - [src/services/memory_manager.py](file://src/services/memory_manager.py)
 - [src/storage/memory_repository.py](file://src/storage/memory_repository.py)
 - [src/core/conversation_orchestrator.py](file://src/core/conversation_orchestrator.py)
+- [src/service/routes/interview.py](file://src/service/routes/interview.py)
+- [src/service/routes/stories.py](file://src/service/routes/stories.py)
+- [src/service/routes/kb_organizer.py](file://src/service/routes/kb_organizer.py)
+- [src/service/schemas/requests.py](file://src/service/schemas/requests.py)
 - [src/enums/state_type.py](file://src/enums/state_type.py)
 - [src/enums/emotion_type.py](file://src/enums/emotion_type.py)
 - [src/enums/phase_type.py](file://src/enums/phase_type.py)
@@ -117,6 +121,8 @@ CO --> OM
   - MemoryManager：短期/长期/画像记忆管理、查询、应用归纳、清空会话
   - MemoryRepository：短期/长期/画像记忆的底层存储与缓存
   - ConversationOrchestrator：会话初始化、处理对话轮次、暂停/恢复/终止、准备交接
+  - Interview HTTP Route：画像预填、采访启动、消息处理、结束归档、状态查询
+  - Task HTTP Route：故事生成、知识库整理、传记大纲、章节写作等 SSE 任务入口
 
 章节来源
 - [src/models/__init__.py:41-86](file://src/models/__init__.py#L41-L86)
@@ -131,6 +137,10 @@ CO --> OM
 - [src/services/memory_manager.py:27-470](file://src/services/memory_manager.py#L27-L470)
 - [src/storage/memory_repository.py:40-359](file://src/storage/memory_repository.py#L40-L359)
 - [src/core/conversation_orchestrator.py:138-401](file://src/core/conversation_orchestrator.py#L138-L401)
+- [src/service/routes/interview.py:96-318](file://src/service/routes/interview.py#L96-L318)
+- [src/service/routes/stories.py:31-88](file://src/service/routes/stories.py#L31-L88)
+- [src/service/routes/kb_organizer.py:34-125](file://src/service/routes/kb_organizer.py#L34-L125)
+- [src/service/schemas/requests.py:9-113](file://src/service/schemas/requests.py#L9-L113)
 
 ## 架构总览
 下图展示会话编排器如何协调各子服务与存储层，驱动一次对话轮次的完整流程。
@@ -192,10 +202,19 @@ Orchestrator-->>Client : "AgentResponse(message, state_update, ...)"
   - _handle_session_time_up：当达到时长限制时，生成结束引导内容并触发交接
   - _generate_session_end_guide：调用LLM生成结束消息、总结与下次主题提示
 
+- HTTP路由入口
+  - POST /api/interview/profile/prefill：采访开始前写入微信侧预填画像，包含wechat_id、user_id、name、age、birth_date、gender
+  - POST /api/interview/start：启动采访会话，返回SSE session_started、agent_message、done
+  - POST /api/interview/message：接收用户回答，可携带candidate_questions，返回question_source与candidate_question_id
+  - POST /api/interview/end：结束采访、归档会话并触发记忆整理
+  - GET /api/interview/status/{user_id}/{session_id}：查询当前采访会话状态
+
 章节来源
 - [src/core/conversation_orchestrator.py:198-401](file://src/core/conversation_orchestrator.py#L198-L401)
 - [src/enums/strategy_type.py:4-8](file://src/enums/strategy_type.py#L4-L8)
 - [src/enums/state_type.py:4-12](file://src/enums/state_type.py#L4-L12)
+- [src/service/routes/interview.py:96-318](file://src/service/routes/interview.py#L96-L318)
+- [src/service/schemas/requests.py:28-102](file://src/service/schemas/requests.py#L28-L102)
 
 ### 记忆管理API
 - 短期记忆
@@ -227,12 +246,19 @@ Orchestrator-->>Client : "AgentResponse(message, state_update, ...)"
   - update_long_term(extracted_info) -> Dict[str, str]（兼容旧接口）
   - update_profile(extracted_info) -> None（兼容旧接口）
 
+- 故事与知识库任务
+  - POST /api/stories/generate：从未消费event中选择最早15个生成一篇故事，保存后更新`.story_state.json`
+  - POST /api/kb-organizer/run：执行知识库整理任务，返回SSE任务事件
+  - GET /api/kb-organizer/result/{user_id}：读取`.kb_organizer_result.json`中的最近一次整理结果
+
 - 清空会话
   - clear_session() -> None（仅清空短期记忆，保留长期记忆）
 
 章节来源
 - [src/services/memory_manager.py:64-470](file://src/services/memory_manager.py#L64-L470)
 - [src/storage/memory_repository.py:91-306](file://src/storage/memory_repository.py#L91-L306)
+- [src/service/routes/stories.py:31-88](file://src/service/routes/stories.py#L31-L88)
+- [src/service/routes/kb_organizer.py:34-125](file://src/service/routes/kb_organizer.py#L34-L125)
 
 ### 数据模型详解
 
