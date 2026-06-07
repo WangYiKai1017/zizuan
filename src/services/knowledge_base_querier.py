@@ -423,11 +423,22 @@ class KnowledgeBaseQuerier:
             # 设置递归限制：每轮迭代 = model 节点 + tool 节点 ≈ 2 步，
             # 额外预留 4 步用于起始 / 收尾
             recursion_limit = self.MAX_ITERATIONS * 2 + 4
+            config = self.llm_service.build_langchain_config(
+                existing_config={"recursion_limit": recursion_limit},
+                trace_node="knowledge_base.react_agent",
+                trace_tags=["knowledge_base", "react_agent"],
+                trace_metadata={
+                    "target_path": target_path,
+                    "max_iterations": self.MAX_ITERATIONS,
+                    "recursion_limit": recursion_limit,
+                    "summary_index_present": bool(summary_content),
+                },
+            )
 
             # 使用 ainvoke 获取完整结果
             result = await self.agent_graph.ainvoke(
                 inputs,
-                config={"recursion_limit": recursion_limit},
+                config=config,
             )
             
             # 获取最终响应消息

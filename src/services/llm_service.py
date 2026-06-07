@@ -495,10 +495,7 @@ class LLMService:
         for attempt in range(max_retries):
             try:
                 print(f"正在请求大模型...")
-                langfuse_handler = self._create_langfuse_handler()
-                callbacks = [langfuse_handler] if langfuse_handler is not None else None
-                config = build_llm_config(
-                    callbacks=callbacks,
+                config = self.build_langchain_config(
                     existing_config=existing_config,
                     trace_node=trace_node,
                     trace_run_name=trace_run_name,
@@ -519,6 +516,31 @@ class LLMService:
                 await asyncio.sleep(wait_time)
         
         raise last_error
+
+    def build_langchain_config(
+        self,
+        *,
+        existing_config: Optional[dict[str, Any]] = None,
+        trace_node: Optional[str] = None,
+        trace_run_name: Optional[str] = None,
+        trace_tags: Optional[List[str]] = None,
+        trace_metadata: Optional[Dict[str, Any]] = None,
+        template_name: Optional[str] = None,
+        output_model: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Build a LangChain config that carries the current Langfuse trace."""
+        langfuse_handler = self._create_langfuse_handler()
+        callbacks = [langfuse_handler] if langfuse_handler is not None else None
+        return build_llm_config(
+            callbacks=callbacks,
+            existing_config=existing_config,
+            trace_node=trace_node,
+            trace_run_name=trace_run_name,
+            trace_tags=trace_tags,
+            trace_metadata=trace_metadata,
+            template_name=template_name,
+            output_model=output_model,
+        )
 
     def _create_langfuse_handler(self) -> Optional[Any]:
         """Create a Langfuse callback handler for the current trace context."""
