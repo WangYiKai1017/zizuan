@@ -141,7 +141,7 @@ class MarkdownFileManager:
             profile_info: 包含被采访者信息的字典，键如:
                 wechat_id, name, age, gender, birth_date,
                 birth_year, occupation, family_status,
-                living_arrangement, story_expectation,
+                living_arrangement,
                 supplementary (补充信息字符串)
 
         Returns:
@@ -159,7 +159,6 @@ class MarkdownFileManager:
             "occupation": "职业",
             "family_status": "家庭状况",
             "living_arrangement": "居住情况",
-            "story_expectation": "故事期望",
         }
 
         if not user_md_path.exists():

@@ -38,15 +38,13 @@ class KnowledgeQueryTool:
         self,
         user_id: str,
         query: Any,
-        max_iterations: int = 5
     ) -> str:
         """
-        执行知识库查询
+        执行知识库查询（两步式工作流）
         
         Args:
             user_id: 用户ID
             query: 查询内容（可以是字符串或结构化数据）
-            max_iterations: 最大迭代次数
             
         Returns:
             查询结果文本

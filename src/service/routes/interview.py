@@ -28,7 +28,6 @@ REQUIRED_PROFILE_FIELDS = [
     "occupation",
     "family_status",
     "living_arrangement",
-    "story_expectation",
 ]
 
 
@@ -79,7 +78,6 @@ def _read_user_profile(file_manager: MarkdownFileManager) -> dict:
         "职业": "occupation",
         "家庭状况": "family_status",
         "居住情况": "living_arrangement",
-        "故事期望": "story_expectation",
     }
     profile = {}
     line_pattern = re.compile(r"^- (.+?):\s*(.+)$")

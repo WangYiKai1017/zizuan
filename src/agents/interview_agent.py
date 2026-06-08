@@ -194,12 +194,10 @@ class InterviewAgent:
                     "turn.kb_query",
                     as_type="tool",
                     input={"query": key_info},
-                    metadata={"max_iterations": 7},
                 ):
                     memory_context = await self.query_tool.query(
                         user_id=self.user_id,
                         query=key_info,
-                        max_iterations=7,
                     )
 
                 # 3) 写入缓存供后续复用

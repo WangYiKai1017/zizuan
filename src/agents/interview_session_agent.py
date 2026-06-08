@@ -232,12 +232,10 @@ class InterviewSessionAgent:
                 "resume.kb_query",
                 as_type="tool",
                 input={"query": analysis_result},
-                metadata={"max_iterations": 5},
             ):
                 knowledge_context = await self.query_tool.query(
                     user_id=self.user_id,
                     query=analysis_result,
-                    max_iterations=5
                 )
             self.current_round_queries.add(query_hash)  # 记录已查询的请求
         
@@ -850,7 +848,6 @@ class InterviewSessionAgent:
             "职业": "occupation",
             "家庭状况": "family_status",
             "居住情况": "living_arrangement",
-            "故事期望": "story_expectation",
         }
 
         profile: dict = {}
