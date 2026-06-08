@@ -1,0 +1,12 @@
+schema_version: 1
+module_path: agent_service/kb_organizer_domain
+title: 知识库整理 Agent
+scope:
+    - src/agents/kb_organizer_agent.py
+    - src/agents/kb_organizer_graph.py
+    - src/service/agent_runners/kb_organizer_runner.py
+    - src/service/routes/kb_organizer.py
+    - src/services/kb_organization_service.py
+source_files: []
+depends_on: []
+related_to: []

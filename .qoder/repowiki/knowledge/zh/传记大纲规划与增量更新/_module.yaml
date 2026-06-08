@@ -1,0 +1,11 @@
+schema_version: 1
+module_path: agent_service/biography_outline_domain
+title: 传记大纲规划与增量更新
+scope:
+    - src/agents/biography_outline_agent.py
+    - src/agents/biography_outline_graph.py
+    - src/service/agent_runners/outline_runner.py
+    - src/service/routes/biography_outline.py
+source_files: []
+depends_on: []
+related_to: []
