@@ -1,0 +1,10 @@
+schema_version: 1
+module_path: agent_service/shared_services
+title: 智能传记代理核心服务与知识库管理
+scope:
+    - src/services/
+    - src/storage/
+    - src/tools/
+source_files: []
+depends_on: []
+related_to: []

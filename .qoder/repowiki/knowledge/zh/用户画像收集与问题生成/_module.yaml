@@ -1,0 +1,10 @@
+schema_version: 1
+module_path: agent_service/profile_collection
+title: 用户画像收集与问题生成
+scope:
+    - src/agents/profile_collection_agent.py
+    - src/config/profile_questions.py
+    - src/services/question_generator.py
+source_files: []
+depends_on: []
+related_to: []

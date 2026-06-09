@@ -5,10 +5,6 @@
 - [conversation_orchestrator.py](file://src/core/conversation_orchestrator.py)
 - [interview_agent.py](file://src/agents/interview_agent.py)
 - [interview_session_agent.py](file://src/agents/interview_session_agent.py)
-- [guided_initial_interview_controller.py](file://src/agents/guided_initial_interview_controller.py)
-- [interview.py](file://src/service/routes/interview.py)
-- [requests.py](file://src/service/schemas/requests.py)
-- [initial_interview_questions.py](file://src/config/initial_interview_questions.py)
 - [session_state.py](file://src/models/session_state.py)
 - [state_type.py](file://src/enums/state_type.py)
 - [phase_type.py](file://src/enums/phase_type.py)
@@ -154,26 +150,6 @@ CO-->>Client : HandoffPackage
 
 ## 详细组件分析
 
-### HTTP 对话接口
-- POST /api/interview/profile/prefill
-  - 功能：采访开始前写入微信侧预填画像
-  - 输入：wechat_id、user_id、name、age、birth_date、gender
-  - 输出：profile、profile_complete、missing_required_fields
-- POST /api/interview/start
-  - 功能：启动采访会话，根据画像完整度进入 profile 或 interview 阶段
-  - 输出：SSE session_started、agent_message、done
-- POST /api/interview/message
-  - 功能：接收用户回答，可携带 candidate_questions
-  - 输出：SSE agent_message，包含 question_source 与 candidate_question_id
-- POST /api/interview/end
-  - 功能：结束采访、归档会话、触发记忆整理
-- GET /api/interview/status/{user_id}/{session_id}
-  - 功能：查询当前采访会话状态
-
-章节来源
-- [interview.py:96-318](file://src/service/routes/interview.py#L96-L318)
-- [requests.py:28-102](file://src/service/schemas/requests.py#L28-L102)
-
 ### ConversationOrchestrator 接口规范
 - initialize_session(user_profile: dict, strategy: StrategyType = SPARKLE_FIRST) -> SessionState
   - 功能：初始化会话，设置会话计时器，可选启用首次画像收集流程，创建 SessionState，发布 SESSION_STARTED 事件
@@ -253,22 +229,6 @@ CLOSED --> [*]
 - [interview_session_agent.py:178-241](file://src/agents/interview_session_agent.py#L178-L241)
 - [interview_session_agent.py:271-284](file://src/agents/interview_session_agent.py#L271-L284)
 - [interview_session_agent.py:369-392](file://src/agents/interview_session_agent.py#L369-L392)
-
-### 初期受控采访固定清单
-- GuidedInitialInterviewController
-  - 功能：在正式采访初期按固定清单推进问题，并允许有限追问
-  - 存储：当前用户知识库下的 `guided_initial_state.json`
-  - 配置：`src/config/initial_interview_questions.py`
-  - 集成：作为 InterviewAgent 内部控制器，不新增独立 Agent
-- 候选问题
-  - 输入：InterviewMessageRequest.candidate_questions
-  - 输出：agent_message.question_source、agent_message.candidate_question_id
-  - 行为：候选问题可作为自然追问穿插，使用后由前端标记消费
-
-章节来源
-- [guided_initial_interview_controller.py:1-452](file://src/agents/guided_initial_interview_controller.py#L1-L452)
-- [initial_interview_questions.py:1-58](file://src/config/initial_interview_questions.py#L1-L58)
-- [interview_agent.py:1-184](file://src/agents/interview_agent.py#L1-L184)
 
 ### 会话状态管理机制（SessionState）
 SessionState 是贯穿会话生命周期的核心数据对象，包含：

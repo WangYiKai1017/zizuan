@@ -1,0 +1,11 @@
+schema_version: 1
+module_path: agent_service/interview_domain
+title: 智能采访与会话管理
+scope:
+    - src/agents/interview_agent.py
+    - src/agents/interview_session_agent.py
+    - src/service/agent_runners/interview_runner.py
+    - src/service/routes/interview.py
+source_files: []
+depends_on: []
+related_to: []

@@ -1,0 +1,11 @@
+schema_version: 1
+module_path: agent_service/biography_writing_domain
+title: 传记写作智能体
+scope:
+    - src/agents/biography_writing_agent.py
+    - src/agents/biography_writing_graph.py
+    - src/service/agent_runners/writing_runner.py
+    - src/service/routes/biography_writing.py
+source_files: []
+depends_on: []
+related_to: []

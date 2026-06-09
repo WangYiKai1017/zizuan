@@ -1,0 +1,10 @@
+schema_version: 1
+module_path: agent_service/core_infrastructure
+title: 对话编排与核心数据模型
+scope:
+    - src/core/
+    - src/enums/
+    - src/models/
+source_files: []
+depends_on: []
+related_to: []

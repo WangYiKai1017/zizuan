@@ -1,0 +1,101 @@
+# 知识卡导出索引文件
+schema_version: 1
+locale: zh-CN
+branch: release/v1.0.0
+exported_at: "2026-06-08T14:27:26Z"
+modules:
+    agent_service/biography_outline_domain:
+        dir_name: 传记大纲规划与增量更新
+        title: 传记大纲规划与增量更新
+        scope:
+            - src/agents/biography_outline_agent.py
+            - src/agents/biography_outline_graph.py
+            - src/service/agent_runners/outline_runner.py
+            - src/service/routes/biography_outline.py
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []
+    agent_service/biography_writing_domain:
+        dir_name: 传记写作智能体
+        title: 传记写作智能体
+        scope:
+            - src/agents/biography_writing_agent.py
+            - src/agents/biography_writing_graph.py
+            - src/service/agent_runners/writing_runner.py
+            - src/service/routes/biography_writing.py
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []
+    agent_service/core_infrastructure:
+        dir_name: 对话编排与核心数据模型
+        title: 对话编排与核心数据模型
+        scope:
+            - src/core/
+            - src/enums/
+            - src/models/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []
+    agent_service/interview_domain:
+        dir_name: 智能采访与会话管理
+        title: 智能采访与会话管理
+        scope:
+            - src/agents/interview_agent.py
+            - src/agents/interview_session_agent.py
+            - src/service/agent_runners/interview_runner.py
+            - src/service/routes/interview.py
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []
+    agent_service/kb_organizer_domain:
+        dir_name: 知识库整理 Agent
+        title: 知识库整理 Agent
+        scope:
+            - src/agents/kb_organizer_agent.py
+            - src/agents/kb_organizer_graph.py
+            - src/service/agent_runners/kb_organizer_runner.py
+            - src/service/routes/kb_organizer.py
+            - src/services/kb_organization_service.py
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []
+    agent_service/profile_collection:
+        dir_name: 用户画像收集与问题生成
+        title: 用户画像收集与问题生成
+        scope:
+            - src/agents/profile_collection_agent.py
+            - src/config/profile_questions.py
+            - src/services/question_generator.py
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []
+    agent_service/service_layer:
+        dir_name: Agent 服务核心业务层
+        title: Agent 服务核心业务层
+        scope:
+            - src/service/app.py
+            - src/service/session_manager.py
+            - src/service/sse_response.py
+            - src/service/routes/files.py
+            - src/service/schemas/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []
+    agent_service/shared_services:
+        dir_name: 智能传记代理核心服务与知识库管理
+        title: 智能传记代理核心服务与知识库管理
+        scope:
+            - src/services/
+            - src/storage/
+            - src/tools/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []

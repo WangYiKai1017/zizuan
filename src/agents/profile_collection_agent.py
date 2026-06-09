@@ -520,7 +520,9 @@ class ProfileCollectionAgent:
             "family_status": "您方便说说家里的情况吗？比如现在家里有哪些亲人常联系。",
             "living_arrangement": "您现在是自己住，还是和家人一起住呢？",
         }
-        next_field = missing_required[0] if missing_required else "living_arrangement"
+        next_field = missing_required[0] if missing_required else None
+        if next_field is None:
+            return "您愿意再多说一点吗？"
         return fallback_questions.get(next_field, "您愿意再多说一点吗？")
     
     async def _generate_completion_message(self) -> str:

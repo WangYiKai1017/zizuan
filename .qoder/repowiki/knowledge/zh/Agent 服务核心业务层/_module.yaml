@@ -1,0 +1,12 @@
+schema_version: 1
+module_path: agent_service/service_layer
+title: Agent 服务核心业务层
+scope:
+    - src/service/app.py
+    - src/service/session_manager.py
+    - src/service/sse_response.py
+    - src/service/routes/files.py
+    - src/service/schemas/
+source_files: []
+depends_on: []
+related_to: []
