@@ -95,7 +95,7 @@
     font-weight: 500;
     white-space: nowrap;
   }
-  input, textarea {
+  input, textarea, select {
     border: 1px solid hsl(var(--input));
     border-radius: 6px;
     background: hsl(var(--background));
@@ -104,10 +104,10 @@
     box-shadow: 0 1px 2px hsl(222.2 84% 4.9% / .04);
     transition: border-color .15s ease, box-shadow .15s ease, background-color .15s ease;
   }
-  input { height: 36px; padding: 7px 10px; }
+  input, select { height: 36px; padding: 7px 10px; }
   textarea { width: 100%; min-height: 72px; padding: 8px 10px; resize: vertical; }
   input::placeholder, textarea::placeholder { color: hsl(var(--muted-foreground)); }
-  input:focus, textarea:focus {
+  input:focus, textarea:focus, select:focus {
     outline: none;
     border-color: hsl(var(--ring));
     box-shadow: 0 0 0 2px hsl(var(--ring) / .24);
@@ -553,6 +553,13 @@
       <div class="row">
         <h3 class="spacer">故事生成</h3>
         <button class="primary" id="storyRunBtn" onclick="runStoryGeneration()"><i data-lucide="book-marked"></i>生成故事</button>
+        <select id="storyLifeStage" title="故事时期">
+          <option value="childhood">童年时期</option>
+          <option value="youth">青年时期</option>
+          <option value="middle_age">中年时期</option>
+          <option value="elderly">老年时期</option>
+        </select>
+        <button onclick="loadStoryList()"><i data-lucide="list"></i>查询列表</button>
         <button onclick="openStoriesFolder()"><i data-lucide="folder-open"></i>查看 stories/</button>
         <span id="storySpinner" class="spinner"></span>
       </div>
@@ -985,6 +992,26 @@ async function openStoriesFolder() {
     await loadFileContent('stories/');
   } catch (e) {
     $('#fileContent').innerHTML = `<div class="line error">${esc(e.message)}</div>`;
+  }
+}
+
+async function loadStoryList() {
+  selectTab('stories');
+  const log = $('#storyLog');
+  log.innerHTML = '';
+  const lifeStage = $('#storyLifeStage').value;
+  logLine(log, 'info', '查询故事列表...');
+  try {
+    await ensureBackend('故事列表查询');
+    const r = await fetch(api() + `/api/stories/${encodeURIComponent(uid())}?life_stage=${encodeURIComponent(lifeStage)}`);
+    if (!r.ok) throw new Error(await parseResponseError(r));
+    const data = await r.json();
+    logLine(log, data.count ? 'success' : 'info', `${data.life_stage_label || lifeStage}：共 ${data.count || 0} 篇故事`);
+    (data.stories || []).forEach(story => {
+      logLine(log, 'info', `${story.title || story.story_id} · ${story.story_path} · 来源 ${story.source_event_count ?? 0} 个事件`);
+    });
+  } catch (e) {
+    logLine(log, 'error', e.message);
   }
 }
 

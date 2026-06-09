@@ -507,7 +507,55 @@ data: {"message": "知识库整理完成"}
 
 故事生成接口由前端触发。每次从用户知识库中选择最早的 15 个未消费事件生成一篇第一人称故事；故事生成并保存成功后，这 15 个事件会写入 `stories/.story_state.json`，下次不再计入数量。
 
-### 5.1 生成故事
+### 5.1 获取故事列表
+
+**GET** `/api/stories/{user_id}?life_stage=childhood`
+
+**路径参数：**
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `user_id` | string | 是 | 用户 ID |
+
+**查询参数：**
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `life_stage` | string | 是 | 人生阶段：`childhood` / `youth` / `middle_age` / `elderly` |
+
+**响应：**
+
+```json
+{
+  "user_id": "test_user002",
+  "life_stage": "childhood",
+  "life_stage_label": "童年时期",
+  "count": 1,
+  "stories": [
+    {
+      "story_id": "childhood_story_20260605_100030",
+      "story_path": "stories/childhood_story_20260605_100030.md",
+      "title": "院子里的童年",
+      "content": "# 院子里的童年\n\n> 生成时间：2026-06-05T10:00:30+08:00\n> 来源时期：童年时期\n> 来源事件数：15\n\n故事正文...\n\n<!--\nsource_events:\n- events/childhood/出生.md\n-->\n",
+      "life_stage": "childhood",
+      "life_stage_label": "童年时期",
+      "created_at": "2026-06-05T10:00:30+08:00",
+      "source_event_count": 15,
+      "event_paths": ["events/childhood/出生.md"],
+      "size": 4096,
+      "last_modified": "2026-06-05T02:00:30+00:00"
+    }
+  ]
+}
+```
+
+**说明：**
+
+- `content` 返回完整 Markdown 文件内容，包含标题、生成信息、故事正文和来源事件注释。
+- `life_stage` 只能取 `childhood`、`youth`、`middle_age`、`elderly`。
+- 若对应时期还没有故事，返回 `count: 0` 和空数组。
+
+### 5.2 生成故事
 
 **POST** `/api/stories/generate`
 
