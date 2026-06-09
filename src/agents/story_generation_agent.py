@@ -303,10 +303,10 @@ class StoryGenerationAgent:
 - 只输出 JSON，不要输出 Markdown 代码块或额外解释。
 
 JSON 格式：
-{
+{{
   "title": "故事标题",
   "body": "故事正文"
-}
+}}
 """
 
     def _build_user_prompt(

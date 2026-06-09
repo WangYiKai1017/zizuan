@@ -18,7 +18,7 @@ class ProfileCollectionAgent:
     用户初始化Agent
     
     职责：
-    - 收集用户基础信息（14个字段）
+    - 收集用户基础信息
     - 渐进式提问，自然对话
     - 从用户回答中提取信息
     
@@ -38,7 +38,6 @@ class ProfileCollectionAgent:
         "occupation",
         "family_status",
         "living_arrangement",
-        "story_expectation",
     ]
     
     def __init__(
@@ -220,7 +219,6 @@ class ProfileCollectionAgent:
             "birth_place": {"question": "您是在哪儿出生的？", "field": "birth_place"},
             "family_status": {"question": "您的家庭状况是怎样的？", "field": "family_status"},
             "living_arrangement": {"question": "您现在是和家人一起住，还是独居？", "field": "living_arrangement"},
-            "story_expectation": {"question": "您最想讲述自己人生中的哪些故事？", "field": "story_expectation"},
             "important_person": {"question": "在您的生命中，有没有对您影响特别大的人？", "field": "important_person"},
         }
         prompt = extraction_prompt.replace("{{user_input}}", user_input)
@@ -330,19 +328,6 @@ class ProfileCollectionAgent:
             "居住": "living_arrangement",
             "居住情况": "living_arrangement",
             "居住安排": "living_arrangement",
-            "想讲述的故事": "story_expectation",
-            "想记录的故事": "story_expectation",
-            "想记录的经历": "story_expectation",
-            "想留下的故事": "story_expectation",
-            "想留下的经历": "story_expectation",
-            "故事期望": "story_expectation",
-            "故事目标": "story_expectation",
-            "写作目标": "story_expectation",
-            "写作期望": "story_expectation",
-            "记录目标": "story_expectation",
-            "记录期望": "story_expectation",
-            "期望": "story_expectation",
-            "人生故事": "story_expectation",
             "children": "children_count",
             "微信ID": "wechat_id",
             "wechat_id": "wechat_id",
@@ -396,29 +381,6 @@ class ProfileCollectionAgent:
                 living_with = living_match.group(1).strip(" ，,；;")
                 if living_with:
                     fields["living_arrangement"] = f"和{living_with}一起住"
-
-        expectation_patterns = [
-            r"(?:这次|我)?(?:最)?(?:想|希望)(?:记录|讲述|讲|留下)([^。；;\n]+)",
-            r"(?:想|希望)把([^。；;\n，,]+?)(?:都)?留给([^。；;\n，,]+)",
-            r"(?:想|希望)让([^。；;\n，,]+?)(?:知道|了解)([^。；;\n，,]+)",
-        ]
-        for pattern in expectation_patterns:
-            expectation_match = re.search(pattern, text)
-            if not expectation_match:
-                continue
-            if len(expectation_match.groups()) == 1:
-                expectation = expectation_match.group(1).strip(" ，,；;")
-            elif "留给" in pattern:
-                left, right = expectation_match.groups()
-                expectation = f"{left.strip(' ，,；;')}留给{right.strip(' ，,；;')}"
-            else:
-                expectation = "".join(
-                    part.strip(" ，,；;") for part in expectation_match.groups()
-                    if part
-                )
-            if expectation:
-                fields["story_expectation"] = expectation
-                break
 
         return fields
 
@@ -557,9 +519,8 @@ class ProfileCollectionAgent:
             "occupation": "您以前主要是做什么工作的？",
             "family_status": "您方便说说家里的情况吗？比如现在家里有哪些亲人常联系。",
             "living_arrangement": "您现在是自己住，还是和家人一起住呢？",
-            "story_expectation": "这次记录人生故事，您最想留下哪一类经历呢？",
         }
-        next_field = missing_required[0] if missing_required else "story_expectation"
+        next_field = missing_required[0] if missing_required else "living_arrangement"
         return fallback_questions.get(next_field, "您愿意再多说一点吗？")
     
     async def _generate_completion_message(self) -> str:

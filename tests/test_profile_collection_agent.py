@@ -33,7 +33,6 @@ async def test_generate_next_question_uses_json_mode_with_recent_context() -> No
         "occupation",
         "family_status",
         "living_arrangement",
-        "story_expectation",
     ]
     assert kwargs["trace_metadata"]["conversation_history_turns"] == 2
     assert "【最近对话】" in kwargs["prompt"]
@@ -79,7 +78,7 @@ async def test_extract_info_fallback_fills_missing_occupation_without_name() -> 
     assert "name" not in result
 
 
-def test_normalize_fields_maps_story_expectation_aliases() -> None:
+def test_normalize_fields_ignores_removed_story_expectation_aliases() -> None:
     agent = ProfileCollectionAgent(
         user_id="trace_user",
         llm_service=MagicMock(),
@@ -91,10 +90,10 @@ def test_normalize_fields_maps_story_expectation_aliases() -> None:
         "记录期望": "记录家庭故事",
     })
 
-    assert normalized["story_expectation"] == "记录家庭故事"
+    assert "story_expectation" not in normalized
 
 
-def test_fallback_extracts_story_expectation_from_leave_to_children() -> None:
+def test_fallback_does_not_extract_removed_story_expectation() -> None:
     agent = ProfileCollectionAgent(
         user_id="trace_user",
         llm_service=MagicMock(),
@@ -103,7 +102,7 @@ def test_fallback_extracts_story_expectation_from_leave_to_children() -> None:
 
     fields = agent._fallback_extract_info("我想把这辈子的教书和成家的事都留给孩子们，也想让孙辈知道我们怎么过来的。")
 
-    assert fields["story_expectation"] == "这辈子的教书和成家的事留给孩子们"
+    assert "story_expectation" not in fields
 
 
 @pytest.mark.asyncio
@@ -135,7 +134,6 @@ def test_profile_phase_decision_is_observed_with_output() -> None:
             "occupation": "退休教师",
             "family_status": "与老伴同住",
             "living_arrangement": "上海，与老伴同住",
-            "story_expectation": "记录一生的重要经历",
         },
     )
     observation = MagicMock()

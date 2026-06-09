@@ -36,6 +36,7 @@ def test_prefill_profile_writes_user_md_and_returns_mapping(tmp_path: Path) -> N
     assert data["profile"]["birth_year"] == "1948"
     assert data["profile_complete"] is False
     assert "occupation" in data["missing_required_fields"]
+    assert "story_expectation" not in data["missing_required_fields"]
 
     user_md = tmp_path / "test_user002" / "user.md"
     content = user_md.read_text(encoding="utf-8")

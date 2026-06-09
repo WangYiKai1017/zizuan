@@ -66,12 +66,6 @@ class ProfileQuestionBank:
             "optional": True,
             "options": ["很好", "还不错", "一般", "不太好"],
         },
-        "story_expectation": {
-            "question": "您最想讲述自己人生中的哪些故事？",
-            "field": "story_expectation",
-            "optional": False,
-            "is_open": True,  # 开放性问题
-        },
         "important_person": {
             "question": "在您的生命中，有没有对您影响特别大的人？",
             "field": "important_person",

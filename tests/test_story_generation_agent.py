@@ -106,6 +106,13 @@ def test_life_stage_order_matches_generation_order() -> None:
     assert LIFE_STAGE_ORDER == ("childhood", "youth", "middle_age", "elderly")
 
 
+def test_system_prompt_keeps_json_example_literal(tmp_path: Path) -> None:
+    prompt = make_agent(tmp_path / "user001")._build_system_prompt("childhood")
+
+    assert '{\n  "title": "故事标题",' in prompt
+    assert '"body": "故事正文"' in prompt
+
+
 def test_save_story_then_marks_events_consumed(tmp_path: Path) -> None:
     kb = tmp_path / "user001"
     for i in range(REQUIRED_EVENT_COUNT):

@@ -850,7 +850,6 @@ class InterviewSessionAgent:
             "职业": "occupation",
             "家庭状况": "family_status",
             "居住情况": "living_arrangement",
-            "故事期望": "story_expectation",
         }
 
         profile: dict = {}

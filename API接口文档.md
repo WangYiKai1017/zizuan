@@ -161,13 +161,12 @@ data: {"code": "AGENT_ERROR", "message": "LLM 服务调用失败", "recoverable"
   "missing_required_fields": [
     "occupation",
     "family_status",
-    "living_arrangement",
-    "story_expectation"
+    "living_arrangement"
   ]
 }
 ```
 
-预填接口只会写入已知字段。当前画像流程仍需要补齐：`occupation`、`family_status`、`living_arrangement`、`story_expectation`。这些字段补齐后，用户才会被视为已完成画像并直接进入主体采访。
+预填接口只会写入已知字段。当前画像流程仍需要补齐：`occupation`、`family_status`、`living_arrangement`。这些字段补齐后，用户才会被视为已完成画像并直接进入主体采访。
 
 ### 3.0.1 初期受控采访
 

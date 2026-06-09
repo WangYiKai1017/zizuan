@@ -124,8 +124,7 @@ class TestCheckKnowledgeBase:
                 "- 年龄: 75\n"
                 "- 职业: 退休工人\n"
                 "- 家庭状况: 与妻子同住\n"
-                "- 居住情况: 上海，与老伴同住\n"
-                "- 故事期望: 想记录工作经历\n",
+                "- 居住情况: 上海，与老伴同住\n",
                 encoding="utf-8",
             )
             assert await agent._check_knowledge_base() is True
@@ -235,8 +234,7 @@ class TestParseUserMd:
                 "- 出生年份: 1951\n"
                 "- 职业: 退休教师\n"
                 "- 家庭状况: 妻子健在\n"
-                "- 居住情况: 与子女同住\n"
-                "- 故事期望: 记录家族历史\n",
+                "- 居住情况: 与子女同住\n",
                 encoding="utf-8",
             )
             result = agent._parse_user_md("u1")
@@ -249,7 +247,6 @@ class TestParseUserMd:
             assert result["occupation"] == "退休教师"
             assert result["family_status"] == "妻子健在"
             assert result["living_arrangement"] == "与子女同住"
-            assert result["story_expectation"] == "记录家族历史"
 
     def test_missing_fields(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -319,8 +316,7 @@ class TestPrefilledProfileFlow:
                 "- 性别: 女\n"
                 "- 职业: 退休教师\n"
                 "- 家庭状况: 与老伴同住\n"
-                "- 居住情况: 上海，与老伴同住\n"
-                "- 故事期望: 想记录一生的重要经历\n",
+                "- 居住情况: 上海，与老伴同住\n",
                 encoding="utf-8",
             )
             agent.archive_tool = MagicMock()

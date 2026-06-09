@@ -28,8 +28,7 @@
 | | children_count | | 子女数量 |
 | | living_arrangement | ✓ | 居住安排 |
 | **健康状况** | health_status | | 健康状况 |
-| **期望** | story_expectation | ✓ | 最想讲述的故事 |
-| | important_person | | 影响最大的人 |
+| **开放信息** | important_person | | 影响最大的人 |
 | | favorite_memory | | 最美好的回忆 |
 
 ### 1.3 设计原则
@@ -128,7 +127,6 @@
   "children": {"question": "您有几个孩子？他们都多大了？", "field": "children_count"},
   "living_arrangement": {"question": "您现在是和家人一起住，还是独居？", "field": "living_arrangement", "options": ["与子女同住", "与老伴同住", "独居", "养老院"]},
   "health_status": {"question": "您的身体状况怎么样？", "field": "health_status", "options": ["很好", "还不错", "一般", "不太好"]},
-  "story_expectation": {"question": "您最想讲述自己人生中的哪些故事？", "field": "story_expectation", "is_open": true},
   "important_person": {"question": "在您的生命中，有没有对您影响特别大的人？", "field": "important_person", "is_open": true}
 }
 ```
