@@ -878,7 +878,7 @@ class InterviewSessionAgent:
         - 年龄 > 70，有姓名：{姓}爷爷 / {姓}奶奶
         - 年龄 50-70，有姓名：{姓}叔叔 / {姓}阿姨
         - 年龄 < 50，有姓名：{姓}先生 / {姓}女士
-        - 年龄未知或姓名未知：“您”
+        - 年龄、姓名或性别未知：“您”
 
         性别推断仅依赖 family_status中的提示。
         """
@@ -919,6 +919,9 @@ class InterviewSessionAgent:
             gender = "female"
         elif any(token in family_status for token in ["妻子", "老婆", "夫人"]):
             gender = "male"
+
+        if gender is None:
+            return "您"
 
         if age_int > 70:
             return f"{surname}奶奶" if gender == "female" else f"{surname}爷爷"

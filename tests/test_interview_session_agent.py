@@ -182,6 +182,12 @@ class TestComputeAddressStyle:
             profile = {"name": "赵敏", "age": "40", "family_status": "丈夫是工程师"}
             assert agent._compute_address_style(profile) == "赵女士"
 
+    def test_unknown_gender_uses_neutral_address(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            agent = _make_session_agent(tmpdir)
+            profile = {"name": "王秀兰", "age": "78"}
+            assert agent._compute_address_style(profile) == "您"
+
     def test_no_age(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             agent = _make_session_agent(tmpdir)
