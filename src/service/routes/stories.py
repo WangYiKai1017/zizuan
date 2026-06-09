@@ -30,7 +30,7 @@ def _validate_user_kb(user_id: str) -> None:
 
 @router.post("/generate")
 async def generate_story(request: UserIdRequest):
-    """Generate one story from the earliest 15 unconsumed events."""
+    """Generate stories for all life stages with at least 15 unconsumed events."""
     api_observation = start_api_observation(
         agent="story_generation",
         operation="generate",

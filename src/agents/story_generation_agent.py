@@ -1,6 +1,6 @@
 """Story generation agent.
 
-Generate one standalone first-person story from the earliest 15 unconsumed
+Generate standalone first-person stories from life-stage groups of unconsumed
 event files in a user's knowledge base.
 """
 
@@ -23,6 +23,13 @@ logger = logging.getLogger(__name__)
 REQUIRED_EVENT_COUNT = 15
 STORY_STATE_FILENAME = ".story_state.json"
 MAX_GENERATION_RETRIES = 1
+LIFE_STAGE_ORDER = ("childhood", "youth", "middle_age", "elderly")
+LIFE_STAGE_LABELS = {
+    "childhood": "童年时期",
+    "youth": "青年时期",
+    "middle_age": "中年时期",
+    "elderly": "老年时期",
+}
 
 
 @dataclass(frozen=True)
@@ -30,6 +37,7 @@ class StoryEvent:
     """An event source selected for story generation."""
 
     path: str
+    life_stage: str
     title: str
     time: str
     event_type: str
@@ -50,6 +58,7 @@ class SavedStory:
 
     story_id: str
     story_path: str
+    life_stage: str
     event_paths: list[str]
 
 
@@ -70,7 +79,7 @@ class StoryStateSaveError(StoryGenerationError):
 
 
 class StoryGenerationAgent:
-    """Lightweight agent for generating one story from 15 event documents."""
+    """Lightweight agent for generating stories from life-stage event groups."""
 
     def __init__(self, kb_path: str | Path, llm_service: LLMService):
         self.kb_path = Path(kb_path)
@@ -102,6 +111,7 @@ class StoryGenerationAgent:
             events.append(
                 StoryEvent(
                     path=rel_path,
+                    life_stage=self._extract_life_stage(rel_path),
                     title=self._extract_title(content) or event_file.stem,
                     time=self._extract_field(content, "时间"),
                     event_type=self._extract_field(content, "事件类型"),
@@ -115,22 +125,54 @@ class StoryGenerationAgent:
         """Select the earliest required events for one story."""
         return events[:REQUIRED_EVENT_COUNT]
 
-    async def generate_story(self, events: list[StoryEvent]) -> GeneratedStory:
+    def group_events_by_stage(self, events: list[StoryEvent]) -> dict[str, list[StoryEvent]]:
+        """Group events by life stage from their file paths."""
+        grouped: dict[str, list[StoryEvent]] = {stage: [] for stage in LIFE_STAGE_ORDER}
+        for event in events:
+            if event.life_stage in grouped:
+                grouped[event.life_stage].append(event)
+        return {
+            stage: sorted(stage_events, key=self._event_sort_key)
+            for stage, stage_events in grouped.items()
+        }
+
+    def select_ready_stage_events(
+        self,
+        events: list[StoryEvent],
+    ) -> dict[str, list[StoryEvent]]:
+        """Select at most one 15-event batch for each ready life stage."""
+        grouped = self.group_events_by_stage(events)
+        return {
+            stage: self.select_events(stage_events)
+            for stage, stage_events in grouped.items()
+            if len(stage_events) >= REQUIRED_EVENT_COUNT
+        }
+
+    async def generate_story(
+        self,
+        events: list[StoryEvent],
+        life_stage: str = "",
+    ) -> GeneratedStory:
         """Generate and parse a story, retrying once on invalid output."""
         last_error = ""
         for attempt in range(MAX_GENERATION_RETRIES + 1):
             with observe_step(
                 "story_generation.generate",
-                metadata={"attempt": attempt + 1, "event_count": len(events)},
+                metadata={
+                    "attempt": attempt + 1,
+                    "event_count": len(events),
+                    "life_stage": life_stage,
+                },
             ):
                 try:
                     result = await self.llm_service.invoke(
-                        prompt=self._build_user_prompt(events),
-                        system_prompt=self._build_system_prompt(),
+                        prompt=self._build_user_prompt(events, life_stage),
+                        system_prompt=self._build_system_prompt(life_stage),
                         trace_node="story_generation.generate",
                         trace_metadata={
                             "attempt": attempt + 1,
                             "event_count": len(events),
+                            "life_stage": life_stage,
                             "event_paths": [event.path for event in events],
                         },
                     )
@@ -145,11 +187,17 @@ class StoryGenerationAgent:
 
         raise StoryOutputInvalidError(last_error or "故事生成结果无效")
 
-    def save_story_and_mark_consumed(self, story: GeneratedStory, events: list[StoryEvent]) -> SavedStory:
+    def save_story_and_mark_consumed(
+        self,
+        story: GeneratedStory,
+        events: list[StoryEvent],
+        life_stage: str = "",
+    ) -> SavedStory:
         """Save story markdown first, then persist consumed event paths."""
         self.stories_dir.mkdir(parents=True, exist_ok=True)
         now = datetime.now().astimezone()
-        story_id = f"story_{now.strftime('%Y%m%d_%H%M%S')}"
+        stage_prefix = f"{life_stage}_" if life_stage else ""
+        story_id = f"{stage_prefix}story_{now.strftime('%Y%m%d_%H%M%S')}"
         story_rel_path = f"stories/{story_id}.md"
         story_abs_path = self.kb_path / story_rel_path
         event_paths = [event.path for event in events]
@@ -158,6 +206,7 @@ class StoryGenerationAgent:
             title=story.title,
             body=story.body,
             generated_at=now.isoformat(),
+            life_stage=life_stage,
             event_paths=event_paths,
         )
         story_abs_path.write_text(content, encoding="utf-8")
@@ -166,6 +215,7 @@ class StoryGenerationAgent:
             self._mark_events_consumed(
                 story_id=story_id,
                 story_path=story_rel_path,
+                life_stage=life_stage,
                 event_paths=event_paths,
                 created_at=now.isoformat(),
             )
@@ -175,7 +225,12 @@ class StoryGenerationAgent:
                 story_rel_path,
             ) from e
 
-        return SavedStory(story_id=story_id, story_path=story_rel_path, event_paths=event_paths)
+        return SavedStory(
+            story_id=story_id,
+            story_path=story_rel_path,
+            life_stage=life_stage,
+            event_paths=event_paths,
+        )
 
     def _load_state(self) -> dict[str, Any]:
         if not self.state_path.exists():
@@ -204,6 +259,7 @@ class StoryGenerationAgent:
         self,
         story_id: str,
         story_path: str,
+        life_stage: str,
         event_paths: list[str],
         created_at: str,
     ) -> None:
@@ -217,6 +273,7 @@ class StoryGenerationAgent:
         stories.append({
             "story_id": story_id,
             "file_path": story_path,
+            "life_stage": life_stage,
             "event_paths": event_paths,
             "created_at": created_at,
         })
@@ -227,15 +284,20 @@ class StoryGenerationAgent:
             "updated_at": created_at,
         })
 
-    def _build_system_prompt(self) -> str:
-        return """你是一位擅长整理口述回忆的中文写作者。
+    def _build_system_prompt(self, life_stage: str = "") -> str:
+        stage_label = LIFE_STAGE_LABELS.get(life_stage, "同一人生时期")
+        return f"""你是一位擅长整理口述回忆的中文写作者。
 
-请把给定的 15 个事件整理成一篇独立的故事，而不是传记章节、年表或资料清单。
+请把给定的 15 个事件整理成一篇独立的故事，而不是传记章节、年表或资料清单。本次材料都来自{stage_label}，故事要围绕这个时期形成一个聚合主题，不要扩展成完整人生回顾。
 
 要求：
 - 使用第一人称“我”。
-- 必须覆盖全部 15 个事件，可以详略不同，但不能完全漏掉任何一个。
-- 只能依据事件材料写作；可以自然衔接和概括主题，但不要编造材料中没有的具体人物、地点、对白、心理活动或因果。
+- 先理解这些事件共同呈现的主题，再组织成 4 到 7 个自然段落。
+- 不要按年份逐条扩写，不要写成“一年一个事件”的流水账，不要每段都用年份开头。
+- 不要求 15 个事件逐个显性展开；重要事件重点写，次要事件可以合并为背景、转折或变化。
+- 不得忽略核心事件，但可以压缩、合并、概括次要事件。
+- 只能依据事件材料写作；可以自然衔接和概括主题，但不要编造材料中没有的具体人物、地点、物件、对白、动作细节、心理活动或因果。
+- 不要主动跳到其他人生阶段；结尾可以有短暂回望或总结，但不要引入材料外的新事件。
 - 语言温暖、朴素、可读，像老人回忆往事。
 - 不要在正文里列出来源文件路径。
 - 只输出 JSON，不要输出 Markdown 代码块或额外解释。
@@ -247,13 +309,19 @@ JSON 格式：
 }
 """
 
-    def _build_user_prompt(self, events: list[StoryEvent]) -> str:
+    def _build_user_prompt(
+        self,
+        events: list[StoryEvent],
+        life_stage: str = "",
+    ) -> str:
+        stage_label = LIFE_STAGE_LABELS.get(life_stage, "同一人生时期")
         blocks = []
         for index, event in enumerate(events, 1):
             blocks.append(
                 "\n".join([
                     f"【事件 {index}】",
                     f"路径：{event.path}",
+                    f"时期：{LIFE_STAGE_LABELS.get(event.life_stage, event.life_stage or '未知')}",
                     f"标题：{event.title}",
                     f"时间：{event.time or '未知'}",
                     f"类型：{event.event_type or 'other'}",
@@ -261,7 +329,7 @@ JSON 格式：
                     event.content.strip(),
                 ])
             )
-        return "请根据下面 15 个事件生成一篇故事：\n\n" + "\n\n---\n\n".join(blocks)
+        return f"请根据下面 15 个来自{stage_label}的事件生成一篇聚合故事：\n\n" + "\n\n---\n\n".join(blocks)
 
     def _parse_story_result(self, result: LLMCallResult) -> GeneratedStory:
         if not result.success:
@@ -292,13 +360,15 @@ JSON 格式：
         title: str,
         body: str,
         generated_at: str,
+        life_stage: str,
         event_paths: list[str],
     ) -> str:
         source_lines = "\n".join(f"- {path}" for path in event_paths)
+        stage_line = f"> 来源时期：{LIFE_STAGE_LABELS.get(life_stage, life_stage)}\n" if life_stage else ""
         return f"""# {title}
 
 > 生成时间：{generated_at}
-> 来源事件数：{len(event_paths)}
+{stage_line}> 来源事件数：{len(event_paths)}
 
 {body.strip()}
 
@@ -313,6 +383,12 @@ source_events:
         if year is None:
             year = self._extract_year(event.content)
         return (0 if year is not None else 1, year or 9999, event.path)
+
+    def _extract_life_stage(self, rel_path: str) -> str:
+        parts = Path(rel_path).parts
+        if len(parts) >= 3 and parts[0] == "events" and parts[1] in LIFE_STAGE_ORDER:
+            return parts[1]
+        return ""
 
     def _extract_year(self, value: str) -> int | None:
         match = re.search(r"\d{4}", value or "")

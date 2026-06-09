@@ -6,6 +6,7 @@ import pytest
 from src.agents.story_generation_agent import (
     REQUIRED_EVENT_COUNT,
     GeneratedStory,
+    LIFE_STAGE_ORDER,
     StoryGenerationAgent,
     StoryOutputInvalidError,
 )
@@ -81,6 +82,30 @@ def test_select_events_uses_earliest_15(tmp_path: Path) -> None:
     assert selected[-1].time == "1994"
 
 
+def test_select_ready_stage_events_groups_by_path_stage(tmp_path: Path) -> None:
+    kb = tmp_path / "user001"
+    for i in range(14):
+        write_event(kb, f"events/childhood/event_{i:02d}.md", f"童年事件{i}", str(1950 + i))
+    for i in range(20):
+        write_event(kb, f"events/youth/event_{i:02d}.md", f"青年事件{i}", str(1970 + i))
+    for i in range(15):
+        write_event(kb, f"events/middle_age/event_{i:02d}.md", f"中年事件{i}", str(1990 + i))
+
+    agent = make_agent(kb)
+    ready = agent.select_ready_stage_events(agent.load_unconsumed_events())
+
+    assert list(ready.keys()) == ["youth", "middle_age"]
+    assert len(ready["youth"]) == REQUIRED_EVENT_COUNT
+    assert ready["youth"][0].time == "1970"
+    assert ready["youth"][-1].time == "1984"
+    assert len(ready["middle_age"]) == REQUIRED_EVENT_COUNT
+    assert "childhood" not in ready
+
+
+def test_life_stage_order_matches_generation_order() -> None:
+    assert LIFE_STAGE_ORDER == ("childhood", "youth", "middle_age", "elderly")
+
+
 def test_save_story_then_marks_events_consumed(tmp_path: Path) -> None:
     kb = tmp_path / "user001"
     for i in range(REQUIRED_EVENT_COUNT):
@@ -91,13 +116,19 @@ def test_save_story_then_marks_events_consumed(tmp_path: Path) -> None:
     saved = agent.save_story_and_mark_consumed(
         GeneratedStory(title="一路走来", body="这是一个足够长的故事正文。" * 10),
         events,
+        life_stage="childhood",
     )
 
     assert (kb / saved.story_path).exists()
+    assert saved.life_stage == "childhood"
+    assert saved.story_id.startswith("childhood_story_")
     state = json.loads((kb / "stories" / ".story_state.json").read_text(encoding="utf-8"))
     assert len(state["generated_event_paths"]) == REQUIRED_EVENT_COUNT
     assert state["stories"][0]["story_id"] == saved.story_id
     assert state["stories"][0]["file_path"] == saved.story_path
+    assert state["stories"][0]["life_stage"] == "childhood"
+    story_text = (kb / saved.story_path).read_text(encoding="utf-8")
+    assert "来源时期：童年时期" in story_text
 
 
 @pytest.mark.asyncio
@@ -111,7 +142,10 @@ async def test_generate_story_retries_invalid_output(tmp_path: Path) -> None:
         LLMCallResult(success=True, content=json.dumps({"title": "往事", "body": valid_body}, ensure_ascii=False)),
     ])
 
-    story = await agent.generate_story(agent.select_events(agent.load_unconsumed_events()))
+    story = await agent.generate_story(
+        agent.select_events(agent.load_unconsumed_events()),
+        life_stage="childhood",
+    )
 
     assert story.title == "往事"
     assert story.body == valid_body
@@ -129,5 +163,8 @@ async def test_generate_story_fails_after_retry(tmp_path: Path) -> None:
     ])
 
     with pytest.raises(StoryOutputInvalidError):
-        await agent.generate_story(agent.select_events(agent.load_unconsumed_events()))
+        await agent.generate_story(
+            agent.select_events(agent.load_unconsumed_events()),
+            life_stage="childhood",
+        )
     assert agent.llm_service.calls == 2
