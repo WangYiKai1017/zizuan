@@ -172,9 +172,9 @@ data: {"code": "AGENT_ERROR", "message": "LLM 服务调用失败", "recoverable"
 
 画像完成后，服务端会在主体采访内部先使用静态预设问题清单引导早期访谈。该流程不新增 API，也不会在正式响应里额外返回进度字段。
 
-- 静态问题配置位于 `src/config/initial_interview_questions.py`
+- 静态问题清单位于 `src/config/data/initial_interview_questions.csv`，服务启动时由 `src/config/initial_interview_questions.py` 读取；其中 `stage` 使用 `childhood`、`youth`、`middle_age`、`elderly` 等标准阶段名，`stage_label` 保留中文阶段名
 - 进度状态保存到 `knowledge_base/{user_id}/guided_initial_state.json`
-- 每个预设问题最多追问 1 次；AI 可自然过渡到下一个问题
+- 每个预设问题最多追问 2 次；AI 可自然过渡到下一个问题
 - 如果用户主动提到强相关候选问题，仍会通过现有 `question_source=candidate_question` 和 `candidate_question_id` 返回给前端
 - 预设问题全部完成后，采访自动切回自由发散模式
 

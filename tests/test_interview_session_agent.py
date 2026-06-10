@@ -332,7 +332,7 @@ class TestPrefilledProfileFlow:
             opening = await agent._start_profile_collection()
 
             assert agent.phase == SessionPhase.INTERVIEW
-            assert "小时候住的房子" in opening
+            assert "最早的记忆" in opening
             assert (agent.knowledge_base_path / GUIDED_STATE_FILENAME).exists()
 
 
@@ -359,7 +359,7 @@ class TestGuidedInitialInterviewController:
             state = controller.ensure_state()
 
             assert state["guided_completed"] is False
-            assert state["current_question_id"] == "childhood_home"
+            assert state["current_question_id"] == "q001"
             assert (Path(tmpdir) / "guided_user" / GUIDED_STATE_FILENAME).exists()
 
     def test_rebuilds_malformed_state(self):
@@ -371,7 +371,7 @@ class TestGuidedInitialInterviewController:
 
             state = controller.ensure_state()
 
-            assert state["current_question_id"] == "childhood_home"
+            assert state["current_question_id"] == "q001"
 
     @pytest.mark.asyncio
     async def test_candidate_question_source_is_preserved(self):
@@ -406,8 +406,8 @@ class TestGuidedInitialInterviewController:
             await controller.generate_next(user_input="我家老屋窗外有一棵大树。")
             state = controller.load_state()
 
-            assert "childhood_home" in state["completed_question_ids"]
-            assert state["current_question_id"] == "childhood_parents"
+            assert "q001" in state["completed_question_ids"]
+            assert state["current_question_id"] == "q002"
 
     @pytest.mark.asyncio
     async def test_does_not_advance_after_one_followup(self):
@@ -426,8 +426,8 @@ class TestGuidedInitialInterviewController:
             decision = await controller.generate_next(user_input="想不起来了。")
             state = controller.load_state()
 
-            assert "childhood_home" not in state["completed_question_ids"]
-            assert state["current_question_id"] == "childhood_home"
+            assert "q001" not in state["completed_question_ids"]
+            assert state["current_question_id"] == "q001"
             assert state["current_question_followup_count"] == 2
             assert "学吉他" in decision.result.question
 
@@ -451,9 +451,10 @@ class TestGuidedInitialInterviewController:
                 decision = await controller.generate_next(user_input="想不起来了。")
             state = controller.load_state()
 
-            assert "childhood_home" in state["completed_question_ids"]
-            assert state["current_question_id"] == "childhood_parents"
-            assert "父母" in decision.result.question
+            assert "q001" in state["completed_question_ids"]
+            assert state["current_question_id"] == "q002"
+            assert "照顾和管教" in decision.result.question
+            assert decision.result.new_topic == "童年与少年时光"
             assert captured["node"] == "guided.advance_to_next_question"
             assert captured["kwargs"]["metadata"]["reason"] == "max_followups_reached"
             observation.update.assert_called_once()
