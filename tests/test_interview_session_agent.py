@@ -432,11 +432,11 @@ class TestGuidedInitialInterviewController:
             assert "学吉他" in decision.result.question
 
     @pytest.mark.asyncio
-    async def test_advances_after_two_followups(self):
+    async def test_advances_after_max_followups(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             controller = self._controller(tmpdir)
             state = controller.ensure_state()
-            state["current_question_followup_count"] = 2
+            state["current_question_followup_count"] = 10
             controller.save_state(state)
             observation = MagicMock()
             captured = {}

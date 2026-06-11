@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 
 GUIDED_STATE_FILENAME = "guided_initial_state.json"
-MAX_FOLLOWUPS_PER_GUIDED_QUESTION = 2
+MAX_FOLLOWUPS_PER_GUIDED_QUESTION = 10
 
 
 @dataclass
