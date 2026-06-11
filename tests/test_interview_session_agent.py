@@ -480,12 +480,17 @@ class TestEndSession:
             mock_interview.current_topic = "童年"
             mock_interview.topic_history = ["家庭"]
             mock_interview.session_summary = "本次摘要"
+            mock_interview.conversation_history = [
+                {"role": "user", "content": "我讲了童年的事。"},
+                {"role": "assistant", "content": "谢谢您的分享。"},
+            ]
             agent.interview_agent = mock_interview
 
             # Mock archive_tool
             agent.archive_tool = MagicMock()
-            agent.archive_tool.create_session_archive = AsyncMock(return_value="")
+            agent.archive_tool.create_session_archive = AsyncMock(return_value=str(Path(tmpdir) / "session.md"))
             agent.archive_tool.archive_conversation = AsyncMock(return_value=None)
+            agent.archive_tool.update_session_archive = AsyncMock(return_value=str(Path(tmpdir) / "session.md"))
 
             # Mock cache_tool
             agent.cache_tool = MagicMock()
@@ -494,6 +499,43 @@ class TestEndSession:
             result = await agent.end_session()
             assert "再见" in result
             assert agent.phase == SessionPhase.CLOSED
+            assert agent.structured_archive_result["status"] == "success"
+            agent.archive_tool.archive_conversation.assert_awaited_once()
+            assert agent.archive_tool.archive_conversation.await_args.kwargs["raise_on_error"] is True
+            agent.archive_tool.update_session_archive.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_end_session_keeps_session_archive_when_structured_archive_fails(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            agent = _make_session_agent(tmpdir)
+            agent.phase = SessionPhase.INTERVIEW
+
+            mock_interview = MagicMock()
+            mock_interview.generate_ending = AsyncMock(
+                return_value={"message": "再见", "next_questions": [], "summary": "摘要"}
+            )
+            mock_interview.current_topic = "童年"
+            mock_interview.topic_history = ["家庭"]
+            mock_interview.session_summary = "本次摘要"
+            mock_interview.conversation_history = [
+                {"role": "user", "content": "我讲了小学经历。"},
+                {"role": "assistant", "content": "那段经历有什么细节？"},
+            ]
+            agent.interview_agent = mock_interview
+
+            agent.archive_tool = MagicMock()
+            agent.archive_tool.create_session_archive = AsyncMock(return_value=str(Path(tmpdir) / "session.md"))
+            agent.archive_tool.archive_conversation = AsyncMock(side_effect=ValueError("invalid life_phase for event evt_001"))
+            agent.archive_tool.update_session_archive = AsyncMock(return_value=str(Path(tmpdir) / "session.md"))
+
+            result = await agent.end_session()
+
+            assert "再见" in result
+            assert agent.phase == SessionPhase.CLOSED
+            assert agent.structured_archive_result["status"] == "failed"
+            assert "invalid life_phase" in agent.structured_archive_result["error"]
+            agent.archive_tool.create_session_archive.assert_awaited_once()
+            agent.archive_tool.update_session_archive.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_end_session_when_already_closed(self):
@@ -965,6 +1007,8 @@ class TestSessionArchiveCreation:
 
             content = Path(path).read_text(encoding="utf-8")
             assert "今天聊了家庭往事" in content
+            assert "## 结构化归档状态" in content
+            assert "- **状态**：unknown" in content
             assert "上学" in content
             assert "母亲" in content
             assert "1960年" in content
@@ -1012,6 +1056,7 @@ class TestSessionArchiveCreation:
 
             expected_sections = [
                 "## 本次采访摘要",
+                "## 结构化归档状态",
                 "## 收集的关键信息",
                 "## 下次采访建议问题",
                 "## 未完成的话题",
@@ -1019,3 +1064,39 @@ class TestSessionArchiveCreation:
             ]
             for section in expected_sections:
                 assert section in content, f"Missing section: {section}"
+
+    def test_update_session_archive_records_structured_failure(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            fm = MarkdownFileManager(base_path=tmpdir, conversation_id="archive_update")
+            path = fm.create_session_archive({
+                "summary": "摘要",
+                "events": [],
+                "people": [],
+                "timepoints": [],
+                "next_questions": [],
+                "unfinished_topics": "",
+                "current_topic": "",
+                "emotion_state": "",
+                "topic_history": [],
+                "structured_archive_status": "pending",
+            })
+
+            fm.update_session_archive(path, {
+                "summary": "摘要",
+                "events": [],
+                "people": [],
+                "timepoints": [],
+                "next_questions": [],
+                "unfinished_topics": "",
+                "current_topic": "",
+                "emotion_state": "",
+                "topic_history": [],
+                "structured_archive_status": "failed",
+                "structured_archive_error": "invalid life_phase for event evt_001",
+                "structured_archive_failed_at": "2026-06-11T10:00:00",
+            })
+
+            content = Path(path).read_text(encoding="utf-8")
+            assert "- **状态**：failed" in content
+            assert "invalid life_phase for event evt_001" in content
+            assert "2026-06-11T10:00:00" in content

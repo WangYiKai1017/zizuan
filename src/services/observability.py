@@ -259,6 +259,7 @@ def start_api_observation(
     operation: str,
     route: str,
     user_id: Optional[str] = None,
+    session_id: Optional[str] = None,
     input: Optional[Any] = None,
     metadata: Optional[dict[str, Any]] = None,
 ) -> ApiObservation:
@@ -270,15 +271,23 @@ def start_api_observation(
         "operation": operation,
         "route": route,
         "user_id": user_id,
+        "session_id": session_id,
         **(metadata or {}),
     }
-    span = client.start_observation(
-        trace_context={"trace_id": uuid4().hex},
-        name=f"api.{agent}.{operation}",
-        as_type="span",
-        input=input,
+    with propagate_attributes(
+        user_id=user_id,
+        session_id=session_id,
+        tags=_dedupe([agent, operation]),
         metadata={k: v for k, v in initial_metadata.items() if v is not None},
-    )
+        trace_name=f"{agent}.{operation}",
+    ):
+        span = client.start_observation(
+            trace_context={"trace_id": uuid4().hex},
+            name=f"api.{agent}.{operation}",
+            as_type="span",
+            input=input,
+            metadata={k: v for k, v in initial_metadata.items() if v is not None},
+        )
     return ApiObservation(
         agent=agent,
         operation=operation,
@@ -286,6 +295,7 @@ def start_api_observation(
         user_id=user_id,
         span=span,
         started_perf=perf_counter(),
+        session_id=session_id,
         metadata=dict(metadata or {}),
     )
 

@@ -31,7 +31,7 @@
 10. [附录](#附录)
 
 ## 简介
-本文件面向LLM服务核心，系统性阐述LLMService类的设计架构与实现原理，覆盖统一的大模型调用接口、多提供商支持机制（OpenAI、Qwen、DeepSeek、Anthropic）、模型初始化流程；详解三种调用模式：基础调用invoke()、模板调用invoke_with_template()、结构化输出invoke_structured()；说明错误处理与重试机制（指数退避策略与异常传播）；解释Prompt模板管理系统（从Python模块与Markdown文件加载模板）；并提供LLM调用统计、Token使用量跟踪与性能监控的实现细节与最佳实践。
+本文件面向LLM服务核心，系统性阐述LLMService类的设计架构与实现原理，覆盖统一的大模型调用接口、多提供商支持机制（OpenAI、DeepSeek、Anthropic）、模型初始化流程；详解三种调用模式：基础调用invoke()、模板调用invoke_with_template()、结构化输出invoke_structured()；说明错误处理与重试机制（指数退避策略与异常传播）；解释Prompt模板管理系统（从Python模块与Markdown文件加载模板）；并提供LLM调用统计、Token使用量跟踪与性能监控的实现细节与最佳实践。
 
 ## 项目结构
 本项目围绕“服务-配置-模板-模型-枚举”分层组织，LLM服务位于服务层，通过配置层注入模型提供商与参数，通过模板层统一管理Prompt，通过模型层对接不同大模型SDK，通过枚举与模型层保证结构化输出的强类型约束。
@@ -52,7 +52,7 @@ P_E["emotion_prompts.py<br/>情绪模板"]
 P_MD["Markdown模板<br/>QuestionGenerator/EmotionDetector"]
 end
 subgraph "模型层"
-LC["LangChain ChatOpenAI<br/>OpenAI/Qwen/DeepSeek"]
+LC["LangChain ChatOpenAI<br/>OpenAI/DeepSeek"]
 LA["LangChain ChatAnthropic<br/>Anthropic"]
 end
 subgraph "模型与枚举"
@@ -103,7 +103,7 @@ MR --> ET
 - [src/enums/emotion_type.py:4-50](file://src/enums/emotion_type.py#L4-L50)
 
 ## 架构总览
-LLMService在初始化时读取LLMConfig，按提供商选择对应的LangChain适配器（OpenAI/Qwen/DeepSeek或Anthropic），随后加载Prompt模板（Python模块与Markdown文件）。调用时支持基础调用、模板调用与结构化输出，内置指数退避重试与Token用量统计，最终通过LLMCallResult统一返回结果与指标。
+LLMService在初始化时读取LLMConfig，按提供商选择对应的LangChain适配器（OpenAI/DeepSeek或Anthropic），随后加载Prompt模板（Python模块与Markdown文件）。调用时支持基础调用、模板调用与结构化输出，内置指数退避重试与Token用量统计，最终通过LLMCallResult统一返回结果与指标。
 
 ```mermaid
 sequenceDiagram
@@ -140,7 +140,7 @@ Service-->>Caller : "LLMCallResult/结构化模型+原始结果"
   - 统一错误处理与重试
   - 记录调用日志与统计
 - 模型初始化
-  - OpenAI/Qwen：通过ChatOpenAI适配，兼容OpenAI API格式
+  - OpenAI/DeepSeek：通过ChatOpenAI适配，兼容OpenAI API格式
   - DeepSeek：通过ChatOpenAI适配，设置额外参数
   - Anthropic：按需动态导入ChatAnthropic
   - 不支持的提供商将抛出异常
@@ -190,8 +190,8 @@ class LLMConfig {
 +retry_delay : float
 +timeout : float
 +from_env() LLMConfig
-+from_env_qwen() LLMConfig
-+from_env_deepseek() LLMConfig
++from_env() LLMConfig
++from_env() LLMConfig
 +get_default_config() LLMConfig
 }
 class PromptTemplate {
@@ -349,7 +349,7 @@ Limit --> |是| Raise["抛出最后异常"]
 - LLMService依赖
   - LLMConfig：提供模型提供商、模型名称、API密钥、基础URL、温度、最大Token、重试与超时等配置
   - PromptTemplate：提供模板渲染与变量校验能力
-  - LangChain适配器：ChatOpenAI（OpenAI/Qwen/DeepSeek）、ChatAnthropic（Anthropic）
+  - LangChain适配器：ChatOpenAI（OpenAI/DeepSeek）、ChatAnthropic（Anthropic）
   - Pydantic模型：用于结构化输出的强类型约束
 - 模块耦合
   - LLMService与LLMConfig弱耦合，通过配置对象注入
@@ -417,7 +417,7 @@ LLMService通过统一的接口抽象、灵活的多提供商适配、完善的�
   - 明确输出模型的JSON Schema，确保LLM遵循格式
   - 对解析失败进行降级处理（如返回默认值或提示）
 - 配置与提供商
-  - 优先使用Qwen专属配置（QWEN_URL/QWEN_APIKEY），否则回退到通用配置
+  - 优先使用DeepSeek专属配置（DEEPSEEK_URL/DEEPSEEK_APIKEY），否则回退到通用配置
   - DeepSeek配置优先级高于OpenAI通用配置
 - 性能与成本
   - 合理设置temperature与max_tokens

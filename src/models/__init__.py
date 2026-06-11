@@ -34,9 +34,8 @@ from .organized_memory import (
     ProtagonistUpdate,
     RelationshipEdge,
     PersonRelationship,
-    FileSuggestion,
-    StorageSuggestions,
     ProcessingSummary,
+    EventLifePhaseResolution,
     TimeType,
     EventType,
     Importance,
@@ -80,9 +79,8 @@ __all__ = [
     "ProtagonistUpdate",
     "RelationshipEdge",
     "PersonRelationship",
-    "FileSuggestion",
-    "StorageSuggestions",
     "ProcessingSummary",
+    "EventLifePhaseResolution",
     
     # 知识库整理相关
     "KBOrganizerState",

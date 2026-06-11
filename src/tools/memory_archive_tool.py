@@ -86,7 +86,8 @@ class MemoryArchiveTool:
         self,
         user_id: str,
         conversation_history: List[Dict],
-        session_summary: str
+        session_summary: str,
+        raise_on_error: bool = False,
     ):
         """
         归档对话记录
@@ -163,6 +164,8 @@ class MemoryArchiveTool:
 
             except Exception as e:
                 logger.error(f"Failed to organize and save conversation: {e}")
+                if raise_on_error:
+                    raise
                 # 如果组织失败，至少保存原始对话记录
                 for i, turn in enumerate(conversation_history):
                     self.memory_manager.add_conversation_turn({
@@ -200,4 +203,21 @@ class MemoryArchiveTool:
             logger.warning(f"Failed to update summary_index after session archive: {e}")
 
         logger.info(f"Created session archive for user {user_id}: {path}")
+        return path
+
+    async def update_session_archive(self, user_id: str, archive_path: str, session_data: dict) -> str:
+        """更新采访记录归档文件并刷新索引。"""
+        if _target_path_is_forbidden(user_id):
+            logger.warning(f"Blocked update_session_archive: user_id contains forbidden path segment: {user_id}")
+            return ""
+
+        file_manager = self.memory_manager.repository.file_manager
+        path = file_manager.update_session_archive(archive_path, session_data)
+
+        try:
+            file_manager.create_or_update_summary_index()
+        except Exception as e:
+            logger.warning(f"Failed to update summary_index after session archive update: {e}")
+
+        logger.info(f"Updated session archive for user {user_id}: {path}")
         return path

@@ -3,7 +3,7 @@ from unittest.mock import AsyncMock, patch
 import tempfile
 from datetime import datetime
 
-from src.services.memory_manager import MemoryManager
+from src.services.memory_manager import LifePhaseResolutionError, MemoryManager
 from src.services.llm_service import LLMCallResult
 from src.storage.memory_repository import MemoryRepository
 from src.storage.markdown_file_manager import MarkdownFileManager
@@ -12,7 +12,13 @@ from src.models import (
     ConversationTurn, OrganizedMemory, EventExtract, PersonExtract,
     ProfileUpdates, ProtagonistUpdate
 )
-from src.models.organized_memory import EventType, Importance, RelationType, InfluenceLevel
+from src.models.organized_memory import (
+    EventLifePhaseResolution,
+    EventType,
+    Importance,
+    RelationType,
+    InfluenceLevel,
+)
 from src.enums import PhaseType
 
 
@@ -54,6 +60,7 @@ class TestMemoryManager:
                     event_id="evt_001",
                     title="童年小院生活",
                     time="童年时期",
+                    life_phase="childhood",
                     location="家中院子",
                     event_type=EventType.FAMILY,
                     importance=Importance.NORMAL,
@@ -119,6 +126,7 @@ class TestMemoryManager:
                     event_id="evt_1956",
                     title="搬到绍兴乡下老屋",
                     time="1956年",
+                    life_phase="childhood",
                     location="绍兴",
                     event_type=EventType.MIGRATION,
                     importance=Importance.NORMAL,
@@ -133,6 +141,7 @@ class TestMemoryManager:
                     event_id="evt_1958",
                     title="父亲骑车带去看露天电影",
                     time="1958年",
+                    life_phase="childhood",
                     location="镇上",
                     event_type=EventType.FAMILY,
                     importance=Importance.NORMAL,
@@ -158,6 +167,112 @@ class TestMemoryManager:
         assert len(result.events) == 2
         assert memory_manager.llm_service.invoke_structured.await_count == 3
         assert len(memory_manager.repository.get_all_events()) == 2
+
+    @pytest.mark.asyncio
+    async def test_event_life_phase_alias_controls_event_path(self, memory_manager):
+        turns = [
+            ConversationTurn(
+                user_input="我大概6到12岁是在芳草地小学读书。",
+                agent_response="那所学校给您留下了什么印象？",
+                timestamp=datetime.now(),
+                turn_id=1,
+            )
+        ]
+        organized_memory = OrganizedMemory(
+            events=[
+                EventExtract(
+                    event_id="evt_p001",
+                    title="小学就读芳草地",
+                    time="约6-12岁",
+                    life_phase="童年时期",
+                    location="芳草地小学",
+                    event_type=EventType.EDUCATION,
+                    importance=Importance.NORMAL,
+                    description="用户小学阶段就读芳草地小学。",
+                    confidence=0.9,
+                )
+            ]
+        )
+        memory_manager.llm_service.invoke_structured.return_value = (organized_memory, None)
+
+        await memory_manager.organize_and_save(turns, PhaseType.CHILDHOOD)
+
+        event_path = memory_manager.repository.file_manager.base_path / "events" / "childhood" / "小学就读芳草地.md"
+        assert event_path.exists()
+        assert not (memory_manager.repository.file_manager.base_path / "events" / "elderly" / "小学就读芳草地.md").exists()
+
+    @pytest.mark.asyncio
+    async def test_event_life_phase_resolution_uses_llm_for_unmapped_value(self, memory_manager):
+        turns = [
+            ConversationTurn(
+                user_input="我刚开始工作时去了第一家工厂。",
+                agent_response="那是怎样的开始？",
+                timestamp=datetime.now(),
+                turn_id=1,
+            )
+        ]
+        organized_memory = OrganizedMemory(
+            events=[
+                EventExtract(
+                    event_id="evt_work_001",
+                    title="进入第一家工厂",
+                    time="成年后",
+                    life_phase="青年时期",
+                    location="工厂",
+                    event_type=EventType.CAREER,
+                    importance=Importance.IMPORTANT,
+                    description="用户成年后进入第一家工厂工作。",
+                    confidence=0.85,
+                )
+            ]
+        )
+        memory_manager.llm_service.invoke_structured.side_effect = [
+            (organized_memory, LLMCallResult(success=True, content="{}")),
+            (EventLifePhaseResolution(life_phase="middle_age", reason="成年后的工作经历"), LLMCallResult(success=True, content="{}")),
+        ]
+
+        await memory_manager.organize_and_save(turns, PhaseType.CHILDHOOD)
+
+        event_path = memory_manager.repository.file_manager.base_path / "events" / "middle_age" / "进入第一家工厂.md"
+        assert event_path.exists()
+        assert memory_manager.llm_service.invoke_structured.await_count == 2
+        assert memory_manager.llm_service.invoke_structured.call_args.kwargs["trace_node"] == "memory_organization.event_life_phase_resolution"
+
+    @pytest.mark.asyncio
+    async def test_event_life_phase_resolution_failure_does_not_persist_events(self, memory_manager):
+        turns = [
+            ConversationTurn(
+                user_input="那是一段说不清时间的经历。",
+                agent_response="您还记得大概是人生哪个阶段吗？",
+                timestamp=datetime.now(),
+                turn_id=1,
+            )
+        ]
+        organized_memory = OrganizedMemory(
+            events=[
+                EventExtract(
+                    event_id="evt_unknown_001",
+                    title="无法定位阶段的经历",
+                    time="不详",
+                    life_phase="无法判断",
+                    location="",
+                    event_type=EventType.OTHER,
+                    importance=Importance.NORMAL,
+                    description="用户讲述了一段无法定位阶段的经历。",
+                    confidence=0.5,
+                )
+            ]
+        )
+        memory_manager.llm_service.invoke_structured.side_effect = [
+            (organized_memory, LLMCallResult(success=True, content="{}")),
+            (None, LLMCallResult(success=False, error="Parse error: invalid life_phase")),
+        ]
+
+        with pytest.raises(LifePhaseResolutionError):
+            await memory_manager.organize_and_save(turns, PhaseType.CHILDHOOD)
+
+        assert memory_manager.repository.get_all_events() == []
+        assert not any((memory_manager.repository.file_manager.base_path / "events").rglob("无法定位阶段的经历.md"))
     
     @pytest.mark.asyncio
     async def test_apply_summary(self, memory_manager):

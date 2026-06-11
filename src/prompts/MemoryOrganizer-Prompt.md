@@ -39,7 +39,7 @@ ${current_phase}
 
 ### 1. 时间线整理原则
 - **精确定位**：尽可能确定事件发生的时间点或时间段
-- **阶段归属**：将事件归入对应的人生阶段（童年/青少年/青年/中年/老年）
+- **阶段归属**：将事件归入对应的人生阶段，但 `life_phase` 字段只能输出英文枚举：`childhood`、`youth`、`middle_age`、`elderly`
 - **时间推断**：若没有明确时间，根据上下文推断（如"那时候我刚工作"→青年早期）
 - **模糊处理**：实在无法确定时间的，标记为"时间不详"
 
@@ -74,7 +74,7 @@ ${current_phase}
     {
       "time_point": "string (时间点，如'1965年'或'童年时期')",
       "time_type": "string (exact|approximate|period|unknown)",
-      "life_phase": "string (childhood|youth|young_adult|middle_age|elderly)",
+      "life_phase": "string (childhood|youth|middle_age|elderly)",
       "event_reference": "string (关联的事件ID)",
       "significance": "string (时间节点意义)"
     }
@@ -85,6 +85,7 @@ ${current_phase}
       "event_id": "string (唯一ID，格式：evt_时间_序号，如evt_1965_001)",
       "title": "string (事件标题，简洁概括)",
       "time": "string (发生时间)",
+      "life_phase": "string (childhood|youth|middle_age|elderly，事件所属人生阶段，用于事件目录分类)",
       "location": "string (地点，若未知填null)",
       "event_type": "string (birth|family|education|career|marriage|children|achievement|difficulty|migration|other)",
       "importance": "string (core|important|normal)",
@@ -139,22 +140,6 @@ ${current_phase}
     ]
   },
   
-  "storage_suggestions": {
-    "timeline_file": "string (建议更新的时间线文件路径)",
-    "event_files": [
-      {
-        "event_id": "string",
-        "suggested_path": "string (建议的存储路径)"
-      }
-    ],
-    "people_files": [
-      {
-        "person_id": "string",
-        "suggested_path": "string (建议的存储路径)"
-      }
-    ]
-  },
-  
   "processing_summary": {
     "total_events_extracted": "int",
     "total_people_identified": "int",
@@ -172,6 +157,7 @@ ${current_phase}
 3. **ID规范**：使用统一的ID格式，便于后续查询和关联
 4. **置信度**：对于推断的信息，标注较低的置信度
 5. **来源追溯**：记录每条信息的来源对话轮次，便于核查
+6. **事件阶段**：每个事件必须输出 `life_phase`，只能为 `childhood`、`youth`、`middle_age`、`elderly` 四者之一；不要输出存储路径
 ```
 
 ---
@@ -395,6 +381,7 @@ class EventExtract(BaseModel):
     event_id: str
     title: str
     time: Optional[str] = None
+    life_phase: str
     location: Optional[str] = None
     event_type: EventType
     importance: Importance
@@ -446,18 +433,6 @@ class ProfileUpdates(BaseModel):
     protagonist: Optional[ProtagonistUpdate] = None
     relationship_network: List[RelationshipEdge] = Field(default_factory=list)
 
-# ========== 存储建议 ==========
-
-class FileSuggestion(BaseModel):
-    event_id: Optional[str] = None
-    person_id: Optional[str] = None
-    suggested_path: str
-
-class StorageSuggestions(BaseModel):
-    timeline_file: Optional[str] = None
-    event_files: List[FileSuggestion] = Field(default_factory=list)
-    people_files: List[FileSuggestion] = Field(default_factory=list)
-
 # ========== 处理摘要 ==========
 
 class ProcessingSummary(BaseModel):
@@ -474,7 +449,6 @@ class OrganizedMemory(BaseModel):
     events: List[EventExtract] = Field(default_factory=list)
     people: List[PersonExtract] = Field(default_factory=list)
     profile_updates: Optional[ProfileUpdates] = None
-    storage_suggestions: Optional[StorageSuggestions] = None
     processing_summary: Optional[ProcessingSummary] = None
     
     @classmethod
@@ -495,7 +469,6 @@ knowledge_base/
 │   │   ├── 出生.md
 │   │   └── 童年记忆-小院枣树.md
 │   ├── youth/           # 青少年事件
-│   ├── young_adult/     # 青年事件
 │   ├── middle_age/      # 中年事件
 │   └── elderly/         # 老年事件
 ```
@@ -651,6 +624,7 @@ knowledge_base/
       "event_id": "evt_childhood_001",
       "title": "童年小院生活",
       "time": "童年时期",
+      "life_phase": "childhood",
       "location": "家中院子",
       "event_type": "family",
       "importance": "normal",
@@ -706,26 +680,6 @@ knowledge_base/
         "person2_id": "ppl_father_001",
         "relationship": "父子",
         "evidence": "父亲常在树下给我们讲故事"
-      }
-    ]
-  },
-  
-  "storage_suggestions": {
-    "timeline_file": "timeline/childhood.md",
-    "event_files": [
-      {
-        "event_id": "evt_childhood_001",
-        "suggested_path": "events/childhood/童年小院生活.md"
-      }
-    ],
-    "people_files": [
-      {
-        "person_id": "ppl_father_001",
-        "suggested_path": "people/family/父亲.md"
-      },
-      {
-        "person_id": "ppl_siblings_001",
-        "suggested_path": "people/family/兄弟姐妹.md"
       }
     ]
   },

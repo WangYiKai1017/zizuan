@@ -7,7 +7,8 @@ from src.services.llm_service import LLMService, get_llm_service
 from src.models import (
     EventInfo, PersonInfo, SummaryContent,
     ConversationTurn, SessionState,
-    OrganizedMemory, TimelineUpdate, EventExtract, PersonExtract, ProfileUpdates
+    OrganizedMemory, TimelineUpdate, EventExtract, PersonExtract, ProfileUpdates,
+    EventLifePhaseResolution,
 )
 from src.enums import PhaseType
 from src.models.organized_memory import EventType, Importance, RelationType
@@ -25,6 +26,32 @@ PHASE_LABELS = {
 
 MEMORY_ORGANIZATION_MAX_TOKENS = 8192
 MEMORY_ORGANIZATION_FALLBACK_BATCH_SIZE = 1
+VALID_EVENT_LIFE_PHASES = {"childhood", "youth", "middle_age", "elderly"}
+EVENT_LIFE_PHASE_ALIASES = {
+    "童年": "childhood",
+    "童年时期": "childhood",
+    "小时候": "childhood",
+    "幼年": "childhood",
+    "儿时": "childhood",
+    "少年": "youth",
+    "少年时期": "youth",
+    "青少年": "youth",
+    "青少年时期": "youth",
+    "青春期": "youth",
+    "学生时代": "youth",
+    "中年": "middle_age",
+    "中年时期": "middle_age",
+    "中年阶段": "middle_age",
+    "老年": "elderly",
+    "老年时期": "elderly",
+    "晚年": "elderly",
+    "退休后": "elderly",
+}
+EVENT_LIFE_PHASE_RESOLUTION_CONCURRENCY = 4
+
+
+class LifePhaseResolutionError(ValueError):
+    """Raised when an event life_phase cannot be resolved safely."""
 
 
 class MemoryManager:
@@ -167,13 +194,13 @@ class MemoryManager:
                     )
                     continue
 
+                await self._normalize_event_life_phases(batch_result.events)
                 logger.info(
                     "Memory organized fallback batch at %s: %s events, %s people",
                     batch_start,
                     len(batch_result.events),
                     len(batch_result.people),
                 )
-                await self._apply_organized_memory(batch_result, batch)
                 self._merge_organized_memory(batched, batch_result)
                 any_success = True
 
@@ -183,6 +210,7 @@ class MemoryManager:
                     len(batched.events),
                     len(batched.people),
                 )
+                await self._apply_organized_memory(batched, turns)
                 return batched
 
         if result is None:
@@ -190,6 +218,8 @@ class MemoryManager:
             return OrganizedMemory.empty()
 
         logger.info(f"Memory organized: {len(result.events)} events, {len(result.people)} people")
+
+        await self._normalize_event_life_phases(result.events)
 
         # 2. 按整理结果存储
         await self._apply_organized_memory(result, turns)
@@ -205,8 +235,9 @@ class MemoryManager:
         """调用结构化记忆整理，并为长事件列表提供更大的输出上限。"""
         phase_instruction = (
             f"{PHASE_LABELS.get(current_phase, str(current_phase))}\n"
-            "注意：请根据内容自动判断每个事件/记忆属于哪个人生阶段"
-            "（童年/少年/青年/中年/老年），不需要依赖对话中的标记。"
+            "注意：请根据内容自动判断每个事件/记忆属于哪个人生阶段；"
+            "life_phase 字段只能输出英文枚举 childhood、youth、middle_age、elderly，"
+            "不要输出中文阶段名，也不需要依赖对话中的标记。"
         )
         variables = {
             "conversation_content": self._format_conversation_content(turns),
@@ -247,10 +278,90 @@ class MemoryManager:
         target.people.extend(source.people or [])
         if source.profile_updates:
             target.profile_updates = source.profile_updates
-        if source.storage_suggestions:
-            target.storage_suggestions = source.storage_suggestions
         if source.processing_summary:
             target.processing_summary = source.processing_summary
+
+    async def _normalize_event_life_phases(self, events: List[EventExtract]) -> None:
+        """Resolve every event life_phase before any event is persisted."""
+        unresolved = []
+        for event in events or []:
+            resolved = self._resolve_life_phase_direct_or_alias(event.life_phase)
+            if resolved:
+                event.life_phase = resolved
+            else:
+                unresolved.append(event)
+
+        if not unresolved:
+            return
+
+        semaphore = asyncio.Semaphore(EVENT_LIFE_PHASE_RESOLUTION_CONCURRENCY)
+
+        async def resolve_with_limit(event: EventExtract) -> str:
+            async with semaphore:
+                return await self._resolve_life_phase_with_llm(event)
+
+        resolved_values = await asyncio.gather(
+            *(resolve_with_limit(event) for event in unresolved),
+            return_exceptions=True,
+        )
+
+        errors = []
+        for event, resolved in zip(unresolved, resolved_values):
+            if isinstance(resolved, Exception):
+                errors.append(f"{event.event_id}: {resolved}")
+                continue
+            normalized = self._resolve_life_phase_direct_or_alias(resolved)
+            if not normalized:
+                errors.append(f"{event.event_id}: invalid life_phase {resolved!r}")
+                continue
+            event.life_phase = normalized
+
+        if errors:
+            raise LifePhaseResolutionError("; ".join(errors))
+
+    def _resolve_life_phase_direct_or_alias(self, value: Any) -> Optional[str]:
+        if value is None:
+            return None
+
+        text = str(value).strip()
+        if not text:
+            return None
+
+        normalized = text.lower().replace("-", "_").replace(" ", "_")
+        if normalized in VALID_EVENT_LIFE_PHASES:
+            return normalized
+
+        return EVENT_LIFE_PHASE_ALIASES.get(text)
+
+    async def _resolve_life_phase_with_llm(self, event: EventExtract) -> str:
+        result, raw = await self.llm_service.invoke_structured(
+            template_name="event_life_phase_resolution",
+            variables={
+                "event_id": event.event_id,
+                "title": event.title,
+                "time": event.time or "",
+                "description": event.description,
+                "event_type": event.event_type.value if isinstance(event.event_type, EventType) else str(event.event_type),
+                "participants": ", ".join(str(item) for item in event.participants or []),
+                "original_life_phase": event.life_phase or "",
+            },
+            output_model=EventLifePhaseResolution,
+            trace_node="memory_organization.event_life_phase_resolution",
+            trace_tags=["memory_organization", "event_life_phase_resolution"],
+            trace_metadata={
+                "event_id": event.event_id,
+                "title": event.title,
+                "time": event.time or "",
+                "original_life_phase": event.life_phase or "",
+                "resolution_source": "llm",
+            },
+        )
+        if result is None:
+            error = getattr(raw, "error", None) or "unknown error"
+            raise LifePhaseResolutionError(
+                f"LLM failed to resolve life_phase for event {event.event_id}: {error}"
+            )
+        return result.life_phase
     
     def _normalize_link_path(self, path: str) -> str:
         """Normalize a stored file path into a wiki-link path relative to
@@ -405,6 +516,7 @@ class MemoryManager:
             event_id=event.event_id,
             title=event.title,
             time=event.time or "",
+            life_phase=event.life_phase,
             location=event.location or "",
             type=event.event_type.value if isinstance(event.event_type, EventType) else event.event_type,
             description=self._sanitize_event_description(event.description),

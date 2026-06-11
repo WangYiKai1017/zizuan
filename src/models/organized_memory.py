@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Any, Literal
 from enum import Enum
 
 
@@ -49,7 +49,10 @@ class InfluenceLevel(str, Enum):
 class TimelineUpdate(BaseModel):
     time_point: str
     time_type: TimeType
-    life_phase: str
+    life_phase: str = Field(
+        default="",
+        description="English enum only: childhood, youth, middle_age, elderly.",
+    )
     event_reference: Optional[str] = None
     significance: Optional[str] = None
 
@@ -59,6 +62,9 @@ class EventExtract(BaseModel):
     event_id: str
     title: str
     time: Optional[str] = None
+    life_phase: str = Field(
+        description="English enum only: childhood, youth, middle_age, elderly. Do not output Chinese labels.",
+    )
     location: Optional[str] = None
     event_type: EventType
     importance: Importance
@@ -115,19 +121,6 @@ class ProfileUpdates(BaseModel):
     relationship_network: List[RelationshipEdge] = Field(default_factory=list)
 
 
-# 存储建议
-class FileSuggestion(BaseModel):
-    event_id: Optional[str] = None
-    person_id: Optional[str] = None
-    suggested_path: str
-
-
-class StorageSuggestions(BaseModel):
-    timeline_file: Optional[Any] = None
-    event_files: List[FileSuggestion] = Field(default_factory=list)
-    people_files: List[FileSuggestion] = Field(default_factory=list)
-
-
 # 处理摘要
 class ProcessingSummary(BaseModel):
     total_events_extracted: int = 0
@@ -143,9 +136,13 @@ class OrganizedMemory(BaseModel):
     events: List[EventExtract] = Field(default_factory=list)
     people: List[PersonExtract] = Field(default_factory=list)
     profile_updates: Optional[ProfileUpdates] = None
-    storage_suggestions: Optional[StorageSuggestions] = None
     processing_summary: Optional[ProcessingSummary] = None
     
     @classmethod
     def empty(cls) -> "OrganizedMemory":
         return cls()
+
+
+class EventLifePhaseResolution(BaseModel):
+    life_phase: Literal["childhood", "youth", "middle_age", "elderly"]
+    reason: str = ""

@@ -58,8 +58,8 @@ class TestSSEEmitter:
             chunks.append(chunk)
         
         assert len(chunks) == 2
-        assert "event: start" in chunks[0]
-        assert "event: done" in chunks[1]
+        assert chunks[0].event == "start"
+        assert chunks[1].event == "done"
     
     async def test_emit_adds_timestamp(self):
         emitter = SSEEmitter()
@@ -75,8 +75,7 @@ class TestSSEEmitter:
             chunks.append(chunk)
         
         # First chunk should have timestamp
-        data_line = chunks[0].split("\n")[1]
-        data = json.loads(data_line[6:])
+        data = json.loads(chunks[0].data)
         assert "timestamp" in data
         assert data["value"] == 42
     
@@ -93,8 +92,7 @@ class TestSSEEmitter:
         async for chunk in emitter.stream():
             chunks.append(chunk)
         
-        data_line = chunks[0].split("\n")[1]
-        data = json.loads(data_line[6:])
+        data = json.loads(chunks[0].data)
         assert data["timestamp"] == "custom_time"
     
     async def test_emit_error(self):
@@ -110,9 +108,8 @@ class TestSSEEmitter:
         async for chunk in emitter.stream():
             chunks.append(chunk)
         
-        assert "event: error" in chunks[0]
-        data_line = chunks[0].split("\n")[1]
-        data = json.loads(data_line[6:])
+        assert chunks[0].event == "error"
+        data = json.loads(chunks[0].data)
         assert data["code"] == "TEST_ERROR"
         assert data["message"] == "Something went wrong"
         assert data["recoverable"] is True

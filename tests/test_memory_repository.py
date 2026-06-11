@@ -68,6 +68,21 @@ class TestMemoryRepository:
         # 验证索引更新
         assert "e001" in repository._event_index
         assert repository._event_index["e001"] == event
+
+    @pytest.mark.asyncio
+    async def test_save_event_uses_life_phase_for_directory(self, repository):
+        event = EventInfo(
+            event_id="e002",
+            title="小学就读芳草地",
+            time="约6-12岁",
+            life_phase="childhood",
+            description="小学阶段就读芳草地。",
+        )
+
+        path = await repository.save_event(event)
+
+        assert path.endswith(os.path.join("events", "childhood", "小学就读芳草地.md"))
+        assert "elderly" not in path
     
     @pytest.mark.asyncio
     async def test_save_person(self, repository):
@@ -135,9 +150,11 @@ class TestMemoryRepository:
             event_id="e001",
             title="测试事件",
             time="1970年",
+            life_phase="youth",
             description="这是一个测试事件",
         )
         
+        await repository.save_event(event)
         await repository.update_timeline(event)
         
         # 验证时间线文件创建

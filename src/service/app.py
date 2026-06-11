@@ -1,8 +1,12 @@
 """FastAPI application factory for the Agent Service."""
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+
+
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
@@ -15,8 +19,16 @@ async def lifespan(app: FastAPI):
     from src.services.llm_service import get_llm_service
     get_llm_service()  # Trigger singleton initialization
     
-    yield
-    # Cleanup on shutdown (if needed)
+    try:
+        yield
+    finally:
+        try:
+            from langfuse import get_client
+            client = get_client()
+            client.flush()
+            client.shutdown()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Failed to flush Langfuse client on shutdown: %s", exc)
 
 
 def create_app() -> FastAPI:

@@ -823,7 +823,30 @@ class MarkdownFileManager:
         file_name = f"session_{date_str}.md"
         file_path = sessions_dir / file_name
 
-        # Build content
+        content = self._build_session_archive_content(session_data, date_str)
+        with open(file_path, "w", encoding="utf-8") as f:
+            f.write(content)
+
+        logger.info(f"Created session archive: {file_path}")
+        return str(file_path)
+
+    def update_session_archive(self, archive_path: str, session_data: dict) -> str:
+        """更新已有采访记录归档文件。"""
+        file_path = Path(archive_path)
+        if not file_path.is_absolute():
+            file_path = self.base_path / file_path
+        file_path.parent.mkdir(parents=True, exist_ok=True)
+
+        date_str = file_path.stem.removeprefix("session_")
+        content = self._build_session_archive_content(session_data, date_str)
+        with open(file_path, "w", encoding="utf-8") as f:
+            f.write(content)
+
+        logger.info(f"Updated session archive: {file_path}")
+        return str(file_path)
+
+    def _build_session_archive_content(self, session_data: dict, date_str: str) -> str:
+        """构建采访记录归档 Markdown 内容。"""
         summary = session_data.get("summary", "")
         events = session_data.get("events", [])
         people = session_data.get("people", [])
@@ -833,6 +856,9 @@ class MarkdownFileManager:
         current_topic = session_data.get("current_topic", "")
         emotion_state = session_data.get("emotion_state", "")
         topic_history = session_data.get("topic_history", [])
+        structured_status = session_data.get("structured_archive_status", "unknown")
+        structured_error = session_data.get("structured_archive_error", "")
+        structured_failed_at = session_data.get("structured_archive_failed_at", "")
 
         # Format lists
         events_list = "\n".join(f"- {e}" for e in events) if events else "（无）"
@@ -852,10 +878,20 @@ class MarkdownFileManager:
         else:
             topic_history_text = topic_history or "（无）"
 
-        content = f"""# 采访记录 - {date_str}
+        structured_lines = [f"- **状态**：{structured_status}"]
+        if structured_error:
+            structured_lines.append(f"- **错误**：{structured_error}")
+        if structured_failed_at:
+            structured_lines.append(f"- **失败时间**：{structured_failed_at}")
+        structured_section = "\n".join(structured_lines)
+
+        return f"""# 采访记录 - {date_str}
 
 ## 本次采访摘要
 {summary}
+
+## 结构化归档状态
+{structured_section}
 
 ## 收集的关键信息
 ### 事件
@@ -878,12 +914,6 @@ class MarkdownFileManager:
 - 情绪状态: {emotion_state or '（无）'}
 - 已探索话题: {topic_history_text}
 """
-
-        with open(file_path, "w", encoding="utf-8") as f:
-            f.write(content)
-
-        logger.info(f"Created session archive: {file_path}")
-        return str(file_path)
 
     def file_exists(self, relative_path: str) -> bool:
         """检查文件是否存在"""

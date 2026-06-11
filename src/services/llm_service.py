@@ -98,8 +98,7 @@ class LLMService:
         """初始化LangChain模型"""
         model_config = self.config
         
-        if model_config.provider in ["openai", "qwen"]:
-            # Qwen兼容OpenAI的API格式
+        if model_config.provider == "openai":
             self._model = ChatOpenAI(
                 model=model_config.model_name,
                 temperature=model_config.temperature,

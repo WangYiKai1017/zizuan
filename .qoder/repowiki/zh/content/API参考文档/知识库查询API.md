@@ -348,7 +348,7 @@ LLM --> Prompt
 系统依赖的关键外部组件：
 
 1. **LangChain框架**：提供Agent执行和工具管理
-2. **大模型服务**：支持多种提供商（OpenAI、Qwen、DeepSeek等）
+2. **大模型服务**：支持多种提供商（OpenAI、DeepSeek等）
 3. **文件系统**：支持Markdown文件的读写和搜索
 4. **模板引擎**：支持Prompt模板的动态加载和渲染
 

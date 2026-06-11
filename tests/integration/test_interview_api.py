@@ -1,34 +1,34 @@
 #!/usr/bin/env python3
-"""Standalone integration test for the Interview agent HTTP/SSE API.
+"""Happy-path end-to-end test for the Interview HTTP/SSE API.
+
+The script starts a real backend service, calls the interview flow, ends the
+session, and inspects generated knowledge-base files.
 
 Usage:
-    python3 tests/integration/test_interview_api.py
+    ./.venv/bin/python tests/integration/test_interview_api.py
 
-Endpoints exercised (in order):
-    1. POST /api/interview/start                  (SSE)
-    2. POST /api/interview/message                (SSE)
-    3. GET  /api/interview/status/{user_id}/{session_id}
-    4. POST /api/interview/end                    (JSON)
-    5. GET  /api/interview/status/{user_id}/{session_id}  (expects 404)
-
-NOTE on routes: the actual route in src/service/routes/interview.py declares
-``GET /status/{user_id}/{session_id}`` (path params), not the
-``GET /status?user_id=...`` query-param form mentioned in the task description.
-This script honours the source-of-truth implementation.
+Optional:
+    ./.venv/bin/python tests/integration/test_interview_api.py \
+        --port 10080 --user-id e2e_interview_001
 """
 from __future__ import annotations
 
-import os
+import argparse
+import shutil
+import socket
+import subprocess
 import sys
+import time
 from pathlib import Path
+from typing import Any
 
-# Allow running directly: `python3 tests/integration/test_interview_api.py`
-_THIS_DIR = Path(__file__).resolve().parent
-if str(_THIS_DIR) not in sys.path:
-    sys.path.insert(0, str(_THIS_DIR))
+# Allow running directly from the repository root.
+THIS_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = THIS_DIR.parent.parent
+if str(THIS_DIR) not in sys.path:
+    sys.path.insert(0, str(THIS_DIR))
 
 from _common import (  # noqa: E402
-    BASE_URL,
     DEFAULT_TIMEOUT,
     SSE_READ_TIMEOUT,
     err,
@@ -38,229 +38,366 @@ from _common import (  # noqa: E402
     section,
     sse_iter,
     summarize,
-    warn,
 )
 
-USER_ID = "test_user_interview"
+
+KB_ROOT = PROJECT_ROOT / "knowledge_base"
+LOG_DIR = PROJECT_ROOT / "logs"
+INTERVIEW_MESSAGES = [
+    "我6到12岁是在芳草地小学读书。那时候学校离家不算近，父母每天都会叮嘱我路上注意安全。",
+    "后来12到18岁，我在朝阳外国语学校读初中和高中。那段时间学习压力很大，但也认识了很多朋友。",
+]
 
 
-def _consume_sse(
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Start the service and run the interview happy-path E2E test.",
+    )
+    parser.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="Service host for the temporary backend (default: 127.0.0.1).",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=0,
+        help="Service port. Use 0 to auto-pick a free port (default: 0).",
+    )
+    parser.add_argument(
+        "--user-id",
+        default="",
+        help="User id to test. Defaults to a timestamped e2e user id.",
+    )
+    parser.add_argument(
+        "--cleanup-kb",
+        action="store_true",
+        help="Delete the generated e2e user knowledge base after the run.",
+    )
+    parser.add_argument(
+        "--startup-timeout",
+        type=float,
+        default=90.0,
+        help="Seconds to wait for /health (default: 90).",
+    )
+    parser.add_argument(
+        "--request-timeout",
+        type=float,
+        default=600.0,
+        help="Seconds for non-SSE requests such as /end (default: 600).",
+    )
+    return parser.parse_args(argv)
+
+
+def pick_free_port(host: str) -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind((host, 0))
+        return int(sock.getsockname()[1])
+
+
+def create_minimal_existing_user_kb(user_id: str) -> Path:
+    """Create enough KB structure so /interview/start enters interview mode."""
+    user_kb = KB_ROOT / user_id
+    if user_kb.exists():
+        shutil.rmtree(user_kb)
+
+    required_directories = [
+        "events/childhood",
+        "events/youth",
+        "events/middle_age",
+        "events/elderly",
+        "people/family",
+        "people/friends",
+        "people/colleagues",
+        "people/others",
+        "timeline",
+        "themes",
+        "sessions",
+    ]
+    for relative_dir in required_directories:
+        (user_kb / relative_dir).mkdir(parents=True, exist_ok=True)
+
+    (user_kb / "user.md").write_text(
+        "# 被采访者档案\n\n"
+        "## 基本信息\n"
+        "- 微信ID: wx_e2e_interview\n"
+        "- 姓名: 林建华\n"
+        "- 年龄: 68\n"
+        "- 性别: 男\n"
+        "- 出生日期: 1958-03-12\n"
+        "- 出生年份: 1958\n"
+        "- 职业: 退休教师\n"
+        "- 家庭状况: 已婚，有一个女儿\n"
+        "- 居住情况: 上海，与妻子同住\n",
+        encoding="utf-8",
+    )
+    (user_kb / "index.md").write_text("# 记忆库索引\n", encoding="utf-8")
+    (user_kb / "summary_index.md").write_text("# 摘要索引\n", encoding="utf-8")
+    (user_kb / "events" / "childhood" / "开场测试事件.md").write_text(
+        "# 开场测试事件\n\n"
+        "- 时间: 童年时期\n"
+        "- 地点: 上海\n\n"
+        "这是 E2E 测试预置事件，用于让服务识别为已有用户并进入采访阶段。\n",
+        encoding="utf-8",
+    )
+    return user_kb
+
+
+def start_service(host: str, port: int) -> tuple[subprocess.Popen[Any], Path]:
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    log_path = LOG_DIR / f"e2e_interview_{int(time.time())}.log"
+    log_file = log_path.open("w", encoding="utf-8")
+    cmd = [
+        sys.executable,
+        "start_service.py",
+        "--host",
+        host,
+        "--port",
+        str(port),
+        "--no-reload",
+    ]
+    info("Starting backend service: " + " ".join(cmd))
+    proc = subprocess.Popen(
+        cmd,
+        cwd=PROJECT_ROOT,
+        stdout=log_file,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    proc._e2e_log_file = log_file  # type: ignore[attr-defined]
+    return proc, log_path
+
+
+def stop_service(proc: subprocess.Popen[Any] | None) -> None:
+    if proc is None:
+        return
+    if proc.poll() is None:
+        proc.terminate()
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=10)
+    log_file = getattr(proc, "_e2e_log_file", None)
+    if log_file is not None:
+        log_file.close()
+
+
+def wait_for_health(base_url: str, proc: subprocess.Popen[Any], timeout: float) -> bool:
+    deadline = time.monotonic() + timeout
+    health_url = f"{base_url}/health"
+    last_error = ""
+    while time.monotonic() < deadline:
+        if proc.poll() is not None:
+            err(f"Backend process exited early with code {proc.returncode}")
+            return False
+        try:
+            response = requests.get(health_url, timeout=2.0)
+            if response.status_code == 200:
+                info(f"Health check passed: {health_url}")
+                return True
+            last_error = f"HTTP {response.status_code}: {response.text[:200]}"
+        except requests.RequestException as exc:
+            last_error = str(exc)
+        time.sleep(1.0)
+    err(f"Backend did not become healthy within {timeout:.0f}s: {last_error}")
+    return False
+
+
+def consume_sse(
     method: str,
     url: str,
     *,
-    json_body: dict | None = None,
+    json_body: dict[str, Any] | None = None,
     capture_session: bool = False,
-) -> tuple[list[tuple[str, dict]], str | None]:
-    """POST + consume an SSE stream. Print events live; return events + session_id."""
-    events: list[tuple[str, dict]] = []
+) -> tuple[list[tuple[str, dict[str, Any]]], str | None]:
+    events: list[tuple[str, dict[str, Any]]] = []
     session_id: str | None = None
-    try:
-        with requests.request(
-            method,
-            url,
-            json=json_body,
-            stream=True,
-            timeout=(DEFAULT_TIMEOUT, SSE_READ_TIMEOUT),
-            headers={"Accept": "text/event-stream"},
-        ) as resp:
-            info(f"{method} {url} → HTTP {resp.status_code}")
-            if resp.status_code >= 400:
-                # Non-streaming error body
-                try:
-                    body = resp.text
-                except Exception:
-                    body = "<unreadable>"
-                err(f"Request failed: {body[:500]}")
-                return events, None
-            for ev_name, data in sse_iter(resp):
-                events.append((ev_name, data))
-                print_sse_event(ev_name, data)
-                if capture_session and session_id is None:
-                    sid = data.get("session_id")
-                    if isinstance(sid, str) and sid:
-                        session_id = sid
-                if ev_name == "done":
-                    break
-                if ev_name == "error":
-                    # Keep consuming until done arrives, but log it
-                    pass
-    except requests.RequestException as exc:
-        err(f"Network/HTTP error during SSE consumption: {exc}")
+    with requests.request(
+        method,
+        url,
+        json=json_body,
+        stream=True,
+        timeout=(DEFAULT_TIMEOUT, SSE_READ_TIMEOUT),
+        headers={"Accept": "text/event-stream"},
+    ) as response:
+        info(f"{method} {url} -> HTTP {response.status_code}")
+        if response.status_code >= 400:
+            raise RuntimeError(f"{method} {url} failed: {response.text[:500]}")
+        for event_name, data in sse_iter(response):
+            events.append((event_name, data))
+            print_sse_event(event_name, data)
+            if capture_session and session_id is None:
+                maybe_session_id = data.get("session_id")
+                if isinstance(maybe_session_id, str) and maybe_session_id:
+                    session_id = maybe_session_id
+            if event_name == "done":
+                break
     return events, session_id
 
 
-def main() -> int:
+def find_keyword_locations(user_kb: Path, keyword: str) -> list[Path]:
+    locations: list[Path] = []
+    for path in sorted((user_kb / "events").glob("*/*.md")):
+        try:
+            content = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        if keyword in path.name or keyword in content:
+            locations.append(path)
+    return locations
+
+
+def verify_event_classification(user_kb: Path) -> list[str]:
     failures: list[str] = []
-    info(f"BASE_URL = {BASE_URL}")
-    info(f"USER_ID  = {USER_ID}")
-
-    # --- Step 1: POST /api/interview/start ------------------------------
-    section("Step 1: POST /api/interview/start")
-    start_url = f"{BASE_URL}/api/interview/start"
-    start_events, session_id = _consume_sse(
-        "POST", start_url, json_body={"user_id": USER_ID}, capture_session=True
-    )
-    if not start_events:
-        failures.append("start: no SSE events received")
-    if not session_id:
-        failures.append("start: no session_id captured from SSE events")
-        # Hard-fail downstream steps if we have no session_id
-        return summarize("Interview API", False, failures)
-    if not isinstance(session_id, str) or not session_id.strip():
-        failures.append(f"start: invalid session_id {session_id!r}")
-
-    # Validate at least one of the expected event names appeared
-    start_event_names = {e for e, _ in start_events}
-    expected_any = {"session_started", "agent_message", "done"}
-    if not (start_event_names & expected_any):
-        warn(
-            f"start: did not see any of {expected_any}; "
-            f"got {sorted(start_event_names)}"
-        )
-
-    info(f"Captured session_id = {session_id}")
-
-    # --- Step 2a: POST /api/interview/message (backward compat) ---------
-    section("Step 2a: POST /api/interview/message (backward compat)")
-    msg_url = f"{BASE_URL}/api/interview/message"
-    msg_payload_compat = {
-        "user_id": USER_ID,
-        "session_id": session_id,
-        "message": "你好，我想开始讲我的故事",
+    expectations = {
+        "芳草地": "childhood",
+        "朝阳外国语": "youth",
     }
-    msg_events_compat, _ = _consume_sse("POST", msg_url, json_body=msg_payload_compat)
-    if not msg_events_compat:
-        failures.append("message_compat: no SSE events received")
-    msg_event_names_compat = {e for e, _ in msg_events_compat}
-    if "agent_message" not in msg_event_names_compat and "error" not in msg_event_names_compat:
-        warn(
-            f"message_compat: expected 'agent_message' (or 'error'); "
-            f"got {sorted(msg_event_names_compat)}"
-        )
 
-    # Validate new fields are present in backward-compat mode
-    for ev_name, data in msg_events_compat:
-        if ev_name == "agent_message":
-            if "question_source" not in data:
-                failures.append("message_compat: missing 'question_source' in agent_message")
-            if "candidate_question_id" not in data:
-                failures.append("message_compat: missing 'candidate_question_id' in agent_message")
+    for keyword, expected_stage in expectations.items():
+        locations = find_keyword_locations(user_kb, keyword)
+        if not locations:
+            failures.append(f"kb: no generated event file contains keyword {keyword!r}")
+            continue
 
-    # --- Step 2b: POST /api/interview/message (with candidate_questions) --
-    # Use a message highly relevant to one candidate question so LLM is likely to select it.
-    section("Step 2b: POST /api/interview/message (with candidate_questions)")
-    msg_payload_cq = {
-        "user_id": USER_ID,
-        "session_id": session_id,
-        "message": "我年轻时在部队待了五年，那时候条件很苦，但从来没后悔过。",
-        "candidate_questions": [
-            {"id": "q_army", "question": "您当年为什么选择参军？"},
-            {"id": "q_friend", "question": "部队里最难忘的人是谁？"},
-        ],
-    }
-    msg_events_cq, _ = _consume_sse("POST", msg_url, json_body=msg_payload_cq)
-    if not msg_events_cq:
-        failures.append("message_cq: no SSE events received")
-    msg_event_names_cq = {e for e, _ in msg_events_cq}
-    if "agent_message" not in msg_event_names_cq and "error" not in msg_event_names_cq:
-        warn(
-            f"message_cq: expected 'agent_message' (or 'error'); "
-            f"got {sorted(msg_event_names_cq)}"
-        )
+        pretty_locations = ", ".join(str(path.relative_to(user_kb)) for path in locations)
+        info(f"keyword {keyword!r} found in: {pretty_locations}")
 
-    # Validate new fields are present when candidate_questions are sent
-    cq_source = None
-    cq_id = None
-    for ev_name, data in msg_events_cq:
-        if ev_name == "agent_message":
-            if "question_source" not in data:
-                failures.append("message_cq: missing 'question_source' in agent_message")
-            if "candidate_question_id" not in data:
-                failures.append("message_cq: missing 'candidate_question_id' in agent_message")
-            cq_source = data.get("question_source")
-            cq_id = data.get("candidate_question_id")
-            info(
-                f"message_cq: question_source={cq_source!r}, "
-                f"candidate_question_id={cq_id!r}"
+        if not any(path.parent.name == expected_stage for path in locations):
+            failures.append(
+                f"kb: expected keyword {keyword!r} under events/{expected_stage}, "
+                f"got: {pretty_locations}"
             )
 
-    # Log whether a candidate question was consumed (best-effort with real LLM)
-    if cq_source == "candidate_question" and cq_id:
-        info(f"SUCCESS: LLM selected candidate question {cq_id!r}")
+        elderly_locations = [path for path in locations if path.parent.name == "elderly"]
+        if elderly_locations:
+            failures.append(
+                f"kb: keyword {keyword!r} should not be under events/elderly, got: "
+                + ", ".join(str(path.relative_to(user_kb)) for path in elderly_locations)
+            )
+
+    session_files = sorted((user_kb / "sessions").glob("session_*.md"))
+    if not session_files:
+        failures.append(f"kb: no session archive files found under {user_kb / 'sessions'}")
     else:
-        warn(
-            "LLM did not select a candidate question this run (non-deterministic with real LLM). "
-            "This is acceptable for integration tests."
+        latest_session = session_files[-1]
+        content = latest_session.read_text(encoding="utf-8")
+        info(f"latest session archive: {latest_session}")
+        if "## 结构化归档状态" not in content:
+            failures.append("kb: latest session archive missing structured archive status section")
+        if "- **状态**：success" not in content:
+            failures.append("kb: latest session archive did not record structured archive success")
+
+    return failures
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
+    port = args.port or pick_free_port(args.host)
+    base_url = f"http://{args.host}:{port}"
+    user_id = args.user_id or f"e2e_interview_{int(time.time())}"
+    user_kb = create_minimal_existing_user_kb(user_id)
+    proc: subprocess.Popen[Any] | None = None
+    failures: list[str] = []
+
+    section("Setup")
+    info(f"PROJECT_ROOT = {PROJECT_ROOT}")
+    info(f"BASE_URL     = {base_url}")
+    info(f"USER_ID      = {user_id}")
+    info(f"USER_KB      = {user_kb}")
+
+    try:
+        proc, log_path = start_service(args.host, port)
+        info(f"Service log: {log_path}")
+        if not wait_for_health(base_url, proc, args.startup_timeout):
+            failures.append(f"service: failed to start; see log {log_path}")
+            return summarize("Interview API happy path E2E", False, failures)
+
+        section("Start Interview")
+        start_events, session_id = consume_sse(
+            "POST",
+            f"{base_url}/api/interview/start",
+            json_body={"user_id": user_id},
+            capture_session=True,
         )
+        if not start_events:
+            failures.append("start: no SSE events received")
+        if not session_id:
+            failures.append("start: no session_id captured")
+            return summarize("Interview API happy path E2E", False, failures)
+        info(f"session_id = {session_id}")
 
-    # --- Step 3: GET /api/interview/status/{user_id}/{session_id} -------
-    section("Step 3: GET /api/interview/status/{user_id}/{session_id}")
-    status_url = f"{BASE_URL}/api/interview/status/{USER_ID}/{session_id}"
-    try:
-        r = requests.get(status_url, timeout=DEFAULT_TIMEOUT)
-        info(f"GET {status_url} → HTTP {r.status_code}")
-        info(f"  body = {r.text[:500]}")
-        if r.status_code != 200:
-            failures.append(
-                f"status (active): expected 200, got {r.status_code}"
+        section("Send Messages")
+        for index, message in enumerate(INTERVIEW_MESSAGES, start=1):
+            info(f"message {index}: {message}")
+            message_events, _ = consume_sse(
+                "POST",
+                f"{base_url}/api/interview/message",
+                json_body={
+                    "user_id": user_id,
+                    "session_id": session_id,
+                    "message": message,
+                },
             )
-        else:
-            try:
-                body = r.json()
-            except ValueError:
-                body = {}
-                failures.append("status (active): response is not valid JSON")
-            if body.get("session_id") != session_id:
-                warn(
-                    f"status (active): session_id mismatch — "
-                    f"got {body.get('session_id')!r}, expected {session_id!r}"
-                )
-            for k in ("session_id", "user_id", "phase"):
-                if k not in body:
-                    warn(f"status (active): missing field '{k}'")
-    except requests.RequestException as exc:
-        failures.append(f"status (active): network error: {exc}")
+            if not message_events:
+                failures.append(f"message {index}: no SSE events received")
 
-    # --- Step 4: POST /api/interview/end --------------------------------
-    section("Step 4: POST /api/interview/end")
-    end_url = f"{BASE_URL}/api/interview/end"
-    end_payload = {"user_id": USER_ID, "session_id": session_id}
-    try:
-        r = requests.post(end_url, json=end_payload, timeout=DEFAULT_TIMEOUT)
-        info(f"POST {end_url} → HTTP {r.status_code}")
-        info(f"  body = {r.text[:500]}")
-        if r.status_code != 200:
-            failures.append(f"end: expected 200, got {r.status_code}")
+        section("Status Before End")
+        status_url = f"{base_url}/api/interview/status/{user_id}/{session_id}"
+        status_response = requests.get(status_url, timeout=DEFAULT_TIMEOUT)
+        info(f"GET {status_url} -> HTTP {status_response.status_code}")
+        info(f"body = {status_response.text[:500]}")
+        if status_response.status_code != 200:
+            failures.append(f"status before end: expected 200, got {status_response.status_code}")
+
+        section("End Interview")
+        end_response = requests.post(
+            f"{base_url}/api/interview/end",
+            json={"user_id": user_id, "session_id": session_id},
+            timeout=args.request_timeout,
+        )
+        info(f"POST /api/interview/end -> HTTP {end_response.status_code}")
+        info(f"body = {end_response.text[:1000]}")
+        if end_response.status_code != 200:
+            failures.append(f"end: expected 200, got {end_response.status_code}")
         else:
-            try:
-                body = r.json()
-            except ValueError:
-                body = {}
-                failures.append("end: response is not valid JSON")
+            body = end_response.json()
             if body.get("status") != "ended":
-                warn(f"end: expected status='ended'; got {body.get('status')!r}")
+                failures.append(f"end: expected status='ended', got {body.get('status')!r}")
             if body.get("session_id") != session_id:
-                warn(
-                    f"end: session_id mismatch — "
-                    f"got {body.get('session_id')!r}, expected {session_id!r}"
+                failures.append(
+                    f"end: expected session_id={session_id!r}, got {body.get('session_id')!r}"
                 )
-    except requests.RequestException as exc:
-        failures.append(f"end: network error: {exc}")
+            structured_archive = body.get("structured_archive")
+            if not isinstance(structured_archive, dict):
+                failures.append("end: missing structured_archive object")
+            elif structured_archive.get("status") != "success":
+                failures.append(
+                    "end: expected structured_archive.status='success', "
+                    f"got {structured_archive.get('status')!r}"
+                )
 
-    # --- Step 5: status after end → expect 404 --------------------------
-    section("Step 5: GET /api/interview/status (after end → 404)")
-    try:
-        r = requests.get(status_url, timeout=DEFAULT_TIMEOUT)
-        info(f"GET {status_url} → HTTP {r.status_code}")
-        info(f"  body = {r.text[:500]}")
-        if r.status_code != 404:
+        section("Status After End")
+        ended_status_response = requests.get(status_url, timeout=DEFAULT_TIMEOUT)
+        info(f"GET {status_url} -> HTTP {ended_status_response.status_code}")
+        info(f"body = {ended_status_response.text[:500]}")
+        if ended_status_response.status_code != 404:
             failures.append(
-                f"status (after end): expected 404, got {r.status_code}"
+                f"status after end: expected 404, got {ended_status_response.status_code}"
             )
-    except requests.RequestException as exc:
-        failures.append(f"status (after end): network error: {exc}")
 
-    return summarize("Interview API", not failures, failures)
+        section("Verify Event Stage Files")
+        failures.extend(verify_event_classification(user_kb))
+        return summarize("Interview API happy path E2E", not failures, failures)
+    except Exception as exc:
+        failures.append(f"unexpected error: {exc}")
+        return summarize("Interview API happy path E2E", False, failures)
+    finally:
+        stop_service(proc)
+        if args.cleanup_kb and user_kb.exists():
+            shutil.rmtree(user_kb)
+            info(f"Cleaned generated KB: {user_kb}")
 
 
 if __name__ == "__main__":
@@ -268,4 +405,4 @@ if __name__ == "__main__":
         sys.exit(main())
     except KeyboardInterrupt:
         err("Interrupted by user")
-        sys.exit(1)
+        sys.exit(130)

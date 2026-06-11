@@ -133,9 +133,11 @@ class InterviewRunner:
             archived = True
             phase_reached = agent.phase.value if hasattr(agent.phase, 'value') else str(agent.phase)
             total_turns = len(getattr(agent, 'conversation_history', []) or [])
+            structured_archive = getattr(agent, "structured_archive_result", None)
         else:
             phase_reached = "unknown"
             total_turns = 0
+            structured_archive = None
 
         # Release session
         await session_manager.release(self.user_id, self.session_id)
@@ -151,4 +153,6 @@ class InterviewRunner:
             },
             "ending_message": ending_message,
         }
+        if structured_archive:
+            summary["structured_archive"] = structured_archive
         return summary

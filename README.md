@@ -246,15 +246,16 @@ pip install -r requirements-dev.txt
 cp .env.example .env
 
 # 编辑 .env 文件，配置你的 API Key
-# QWEN_APIKEY=your_api_key_here
+# DEEPSEEK_APIKEY=your_api_key_here
 ```
 
 `.env` 文件配置示例：
 
 ```bash
 # LLM 配置
-QWEN_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
-QWEN_APIKEY=your_api_key_here
+DEEPSEEK_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+DEEPSEEK_APIKEY=your_api_key_here
+DEEPSEEK_MODEL_NAME=deepseek-v4-flash
 
 # 日志配置
 LOG_LEVEL=INFO
@@ -366,9 +367,9 @@ knowledge_base/
 支持配置不同的 LLM 提供商：
 
 ```python
-# 使用通义千问
+# 使用 DeepSeek
 LLMService(
-    model="qwen-max",
+    model="deepseek-v4-flash",
     api_key="your_key",
     base_url="https://dashscope.aliyuncs.com/compatible-mode/v1"
 )

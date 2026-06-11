@@ -102,6 +102,7 @@ class InterviewSessionAgent:
         # 会话状态和历史
         self.session_state: Optional[SessionState] = None
         self.conversation_history: list = []
+        self.structured_archive_result: dict = {"status": "not_started", "error": None}
         self.current_round_queries: set = set()  # 本轮对话中已提出的查询请求
 
         # 老用户恢复会话时载入的候选问题（来自上一次 session 归档）
@@ -568,22 +569,12 @@ class InterviewSessionAgent:
         ending_message = self._sanitize_archive_text(ending_message)
         summary = self._sanitize_archive_text(summary)
 
-        # 先归档对话记录，让 session 归档可以引用本次结构化提取结果。
-        with observe_step("ending.archive_conversation", as_type="tool"):
-            organized_memory = await self.archive_tool.archive_conversation(
-                user_id=self.user_id,
-                conversation_history=self.conversation_history,
-                session_summary=self.interview_agent.session_summary
-            )
-
-        events, people, timepoints = self._format_session_archive_items(organized_memory)
-
         # 构建 session_data 用于采访记录归档
         session_data = {
             "summary": summary,
-            "events": events,
-            "people": people,
-            "timepoints": timepoints,
+            "events": [],
+            "people": [],
+            "timepoints": [],
             "next_questions": next_questions,
             "unfinished_topics": self._stringify_topic(self.interview_agent.current_topic) or "",
             "current_topic": self._stringify_topic(self.interview_agent.current_topic) or "",
@@ -593,11 +584,48 @@ class InterviewSessionAgent:
                 for topic in self.interview_agent.topic_history
                 if self._stringify_topic(topic)
             ],
+            "structured_archive_status": "pending",
+            "structured_archive_error": "",
+            "structured_archive_failed_at": "",
         }
 
-        # 创建采访记录归档
+        self.structured_archive_result = {"status": "pending", "error": None}
+
+        # 先创建采访记录归档，确保结构化归档失败时原始 session 仍被留存。
         with observe_step("ending.create_session_archive", as_type="tool"):
-            await self.archive_tool.create_session_archive(self.user_id, session_data)
+            session_archive_path = await self.archive_tool.create_session_archive(self.user_id, session_data)
+
+        try:
+            with observe_step("ending.archive_conversation", as_type="tool"):
+                organized_memory = await self.archive_tool.archive_conversation(
+                    user_id=self.user_id,
+                    conversation_history=self.conversation_history,
+                    session_summary=self.interview_agent.session_summary,
+                    raise_on_error=True,
+                )
+
+            events, people, timepoints = self._format_session_archive_items(organized_memory)
+            session_data.update({
+                "events": events,
+                "people": people,
+                "timepoints": timepoints,
+                "structured_archive_status": "success",
+                "structured_archive_error": "",
+                "structured_archive_failed_at": "",
+            })
+            self.structured_archive_result = {"status": "success", "error": None}
+        except Exception as e:
+            error_message = self._sanitize_archive_text(str(e)) or e.__class__.__name__
+            logger.error(f"Structured archive failed for user {self.user_id}: {error_message}")
+            session_data.update({
+                "structured_archive_status": "failed",
+                "structured_archive_error": error_message,
+                "structured_archive_failed_at": datetime.now().isoformat(),
+            })
+            self.structured_archive_result = {"status": "failed", "error": error_message}
+
+        with observe_step("ending.update_session_archive", as_type="tool"):
+            await self.archive_tool.update_session_archive(self.user_id, session_archive_path, session_data)
         
         self.phase = SessionPhase.CLOSED
         return ending_message

@@ -19,6 +19,7 @@ class EventInfo(BaseModel):
     event_id: str = Field(..., description="事件ID")
     title: str = Field(..., description="事件标题")
     time: str = Field(..., description="时间描述")
+    life_phase: str = Field(default="", description="人生阶段: childhood/youth/middle_age/elderly")
     time_precision: str = Field(default="year", description="时间精度: year/month/day")
     location: str = Field(default="", description="地点")
     type: str = Field(default="other", description="事件类型")

@@ -12,6 +12,8 @@ from src.models import EventInfo, PersonInfo, SessionState
 
 logger = logging.getLogger(__name__)
 
+VALID_EVENT_PHASES = {"childhood", "youth", "middle_age", "elderly"}
+
 
 class LRUCache:
     """LRU缓存实现"""
@@ -184,10 +186,10 @@ class MemoryRepository:
             文件路径
         """
         # 确定存储目录
-        phase_dir = self._get_phase_directory(event.time)
+        phase_dir = event.life_phase if event.life_phase in VALID_EVENT_PHASES else self._get_phase_directory(event.time)
         file_name = self._generate_event_filename(event.title)
         relative_path = f"events/{phase_dir}/{file_name}.md"
-        duplicate_path = self._remove_duplicate_event_files(event, relative_path)
+        duplicate_path = self._remove_duplicate_event_files(event, relative_path, phase_dir)
         if duplicate_path:
             relative_path = duplicate_path
         
@@ -356,7 +358,7 @@ class MemoryRepository:
         """根据时间确定人生阶段目录"""
         # 简化实现：根据关键词判断
         # 实际应该根据具体年份计算
-        time_lower = time_str.lower()
+        time_lower = (time_str or "").lower()
         
         # 提取年份（如果有）
         import re
@@ -398,9 +400,14 @@ class MemoryRepository:
         name = re.sub(r'[^\w\u4e00-\u9fff]', '-', title)
         return name[:50]  # 限制长度
 
-    def _remove_duplicate_event_files(self, event: EventInfo, target_relative_path: str) -> Optional[str]:
+    def _remove_duplicate_event_files(
+        self,
+        event: EventInfo,
+        target_relative_path: str,
+        phase_dir: Optional[str] = None,
+    ) -> Optional[str]:
         """删除同一年份、同类型、标题高度相似的旧事件文件。"""
-        phase_dir = self._get_phase_directory(event.time)
+        phase_dir = phase_dir or self._get_phase_directory(event.time)
         dir_path = self.file_manager.base_path / "events" / phase_dir
         if not dir_path.exists():
             return None

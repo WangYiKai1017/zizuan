@@ -203,6 +203,7 @@ async def send_message(request: InterviewMessageRequest):
         operation="message",
         route="POST /interview/message",
         user_id=request.user_id,
+        session_id=request.session_id,
         input={"user_id": request.user_id, "session_id": request.session_id},
     )
     try:
@@ -274,24 +275,53 @@ async def send_message(request: InterviewMessageRequest):
 @router.post("/end")
 async def end_interview(request: InterviewEndRequest):
     """End an interview session. Returns JSON summary."""
-    session_manager = SessionManager.get_instance()
-    session = await session_manager.get_active_session(request.user_id)
+    api_observation = start_api_observation(
+        agent="interview",
+        operation="end",
+        route="POST /interview/end",
+        user_id=request.user_id,
+        session_id=request.session_id,
+        input={"user_id": request.user_id, "session_id": request.session_id},
+    )
+    try:
+        session_manager = SessionManager.get_instance()
+        session = await session_manager.get_active_session(request.user_id)
 
-    if not session or session.agent_type != AgentType.INTERVIEW:
-        raise HTTPException(status_code=404, detail={
-            "error": {"code": "SESSION_NOT_FOUND", "message": "会话不存在", "details": None}
-        })
+        if not session or session.agent_type != AgentType.INTERVIEW:
+            raise HTTPException(status_code=404, detail={
+                "error": {"code": "SESSION_NOT_FOUND", "message": "会话不存在", "details": None}
+            })
 
-    if session.session_id != request.session_id:
-        raise HTTPException(status_code=404, detail={
-            "error": {"code": "SESSION_NOT_FOUND", "message": "会话ID不匹配", "details": None}
-        })
+        if session.session_id != request.session_id:
+            raise HTTPException(status_code=404, detail={
+                "error": {"code": "SESSION_NOT_FOUND", "message": "会话ID不匹配", "details": None}
+            })
 
-    emitter = SSEEmitter()  # Not used for streaming here, but needed by runner constructor
-    runner = InterviewRunner(user_id=request.user_id, session_id=request.session_id, emitter=emitter)
+        api_observation.set_session_id(request.session_id)
+        emitter = SSEEmitter()  # Not used for streaming here, but needed by runner constructor
+        runner = InterviewRunner(
+            user_id=request.user_id,
+            session_id=request.session_id,
+            emitter=emitter,
+            trace_context=api_observation.child_context(operation="end"),
+        )
 
-    summary = await runner.end()
-    return JSONResponse(content=summary)
+        summary = await runner.end()
+        api_observation.end(
+            status="completed",
+            output={
+                "status": summary.get("status"),
+                "session_id": summary.get("session_id"),
+                "structured_archive": summary.get("structured_archive"),
+            },
+        )
+        return JSONResponse(content=summary)
+    except HTTPException as ex:
+        api_observation.end(status="failed", error=ex)
+        raise
+    except Exception as ex:
+        api_observation.end(status="failed", error=ex)
+        raise
 
 
 @router.get("/status/{user_id}/{session_id}")
