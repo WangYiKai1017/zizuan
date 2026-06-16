@@ -14,6 +14,7 @@ Optional:
 from __future__ import annotations
 
 import argparse
+import json
 import shutil
 import socket
 import subprocess
@@ -46,6 +47,16 @@ LOG_DIR = PROJECT_ROOT / "logs"
 INTERVIEW_MESSAGES = [
     "我6到12岁是在芳草地小学读书。那时候学校离家不算近，父母每天都会叮嘱我路上注意安全。",
     "后来12到18岁，我在朝阳外国语学校读初中和高中。那段时间学习压力很大，但也认识了很多朋友。",
+    # 第三轮：答非所问——上文应该还在追问学校/朋友相关，用户突然聊到邻居
+    "说起那时候，我最怀念的其实是我家隔壁的李奶奶。她家院子里有棵大枣树，"
+    "每年秋天都叫我去打枣。她一个人住，儿子在外地工作，我放学了就爱往她家跑。",
+    # 第四轮：提供丰富细节（时间/地点/人物/感受），测试叙事完整性信号
+    "初三那年，教语文的王老师特别鼓励我。有一次我写了一篇作文叫《院子里的四季》，"
+    "她拿到全班念了一遍，还推荐我去参加区里的作文比赛。我居然拿了个一等奖，"
+    "当时特别激动，觉得有人认可我了。",
+    # 第五轮：简短回答 + 情感反思，测试情绪饱和度与隐性诉求信号
+    "嗯，后来选大学专业的时候我就选了中文系。王老师对我的影响挺大的，"
+    "现在回想起来，要是没有她那句鼓励，我可能走的是另一条路了。",
 ]
 
 
@@ -248,6 +259,53 @@ def find_keyword_locations(user_kb: Path, keyword: str) -> list[Path]:
     return locations
 
 
+def read_guided_state(user_kb: Path) -> dict:
+    """Read the guided_initial_state.json file."""
+    state_file = user_kb / "guided_initial_state.json"
+    if not state_file.exists():
+        return {}
+    try:
+        raw = state_file.read_text(encoding="utf-8")
+        return json.loads(raw)
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+def verify_guided_state(user_kb: Path) -> list[str]:
+    """Verify guided state reflects independent completion/transition logic."""
+    failures: list[str] = []
+    state = read_guided_state(user_kb)
+    if not state:
+        failures.append("guided_state: file missing or unreadable")
+        return failures
+
+    info(f"guided_state = {json.dumps(state, ensure_ascii=False)}")
+
+    # With only 5 messages, guided phase should NOT be completed (64 preset questions)
+    if state.get("guided_completed") is True:
+        failures.append("guided_state: guided_completed should be false after only 5 messages")
+
+    completed_ids = state.get("completed_question_ids", [])
+    info(f"completed_question_ids = {completed_ids}")
+
+    # At most a few questions should be completed after 5 messages.
+    # If many are completed, the LLM is likely marking questions done without proper justification.
+    if len(completed_ids) > 3:
+        failures.append(
+            f"guided_state: {len(completed_ids)} questions completed after only 5 messages, "
+            "expected at most 3 (LLM may be over-marking completions)"
+        )
+
+    # current_question_id should be valid and not in completed list
+    current_id = state.get("current_question_id")
+    if current_id and current_id in completed_ids:
+        failures.append(
+            f"guided_state: current_question_id {current_id!r} is in completed_question_ids"
+        )
+
+    return failures
+
+
 def verify_event_classification(user_kb: Path) -> list[str]:
     failures: list[str] = []
     expectations = {
@@ -378,6 +436,9 @@ def main(argv: list[str] | None = None) -> int:
             )
             if not message_events:
                 failures.append(f"message {index}: no SSE events received")
+
+        section("Verify Guided State")
+        failures.extend(verify_guided_state(user_kb))
 
         section("Status Before End")
         status_url = f"{base_url}/api/interview/status/{user_id}/{session_id}"
