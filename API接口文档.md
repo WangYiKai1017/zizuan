@@ -346,22 +346,32 @@ data: {"session_id": "sess_20260516_103000_abc123", "message": "好的，基本�
 {
   "status": "ended",
   "session_id": "sess_20260516_103000_abc123",
+  "title": "童年青岛院子记忆",
   "summary": {
     "total_turns": 24,
-    "duration_minutes": 12,
-    "phase_reached": "interview",
-    "collected_events": 5,
-    "collected_people": 3,
-    "coverage": {
-      "childhood": 0.6,
-      "youth": 0.3,
-      "middle_age": 0.0,
-      "elderly": 0.0
-    }
+    "phase_reached": "closed",
+    "archived": true
   },
-  "conversation_saved": "knowledge_base/test_user002/conversation_2026-05-16_10-42-00.json"
+  "ending_message": "王奶奶，今天和您聊天真的很开心！在这段时间里，您跟我分享了很多珍贵的回忆...",
+  "structured_archive": {
+    "status": "success",
+    "error": null
+  }
 }
 ```
+
+**字段说明：**
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `status` | string | 固定值 `"ended"` |
+| `session_id` | string | 会话标识 |
+| `title` | string | 本次对话的简短标题（5-15字），由 LLM 根据对话内容生成，可用于会话列表展示 |
+| `summary.total_turns` | integer | 本次会话总对话轮次 |
+| `summary.phase_reached` | string | 会话结束时所处阶段 |
+| `summary.archived` | boolean | 是否已完成归档 |
+| `ending_message` | string | LLM 生成的结束引导消息（含内容回顾与下次话题预告） |
+| `structured_archive` | object/null | 结构化归档结果，`status` 为 `"success"` / `"failed"` / `"pending"` |
 
 ---
 

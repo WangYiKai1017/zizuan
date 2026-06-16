@@ -541,18 +541,21 @@ class InterviewSessionAgent:
             candidate_question_id=None,
         )
 
-    async def _start_ending(self) -> str:
+    async def _start_ending(self) -> dict:
         """
         启动结束流程
-        
+
         流程：
         1. 结束当前问题
-        2. 生成总结和结束语（含下次采访建议问题）
+        2. 生成总结和结束语（含下次采访建议问题及会话标题）
         3. 创建采访记录归档
         4. 归档对话记录
+
+        Returns:
+            dict with keys: message (str), title (str)
         """
         self.phase = SessionPhase.ENDING
-        
+
         # 使用InterviewAgent的结束流程（现在返回 dict）
         ending_result = await self.interview_agent.generate_ending()
         self.conversation_history = list(self.interview_agent.conversation_history)
@@ -560,10 +563,12 @@ class InterviewSessionAgent:
         # 兼容旧的字符串返回和新的dict返回
         if isinstance(ending_result, dict):
             ending_message = ending_result.get("message", "")
+            title = ending_result.get("title", "")
             next_questions = ending_result.get("next_questions", [])
             summary = ending_result.get("summary", "")
         else:
             ending_message = ending_result
+            title = ""
             next_questions = []
             summary = ending_result
         ending_message = self._sanitize_archive_text(ending_message)
@@ -628,7 +633,7 @@ class InterviewSessionAgent:
             await self.archive_tool.update_session_archive(self.user_id, session_archive_path, session_data)
         
         self.phase = SessionPhase.CLOSED
-        return ending_message
+        return {"message": ending_message, "title": title}
 
     def _format_session_archive_items(self, organized_memory) -> tuple[list[str], list[str], list[str]]:
         """把结构化归档结果转换成 session md 里的人类可读列表。"""
@@ -693,14 +698,17 @@ class InterviewSessionAgent:
         text = text.replace("资深钳工", "钳工")
         return text.strip().rstrip("，,")
     
-    async def end_session(self) -> str:
+    async def end_session(self) -> dict:
         """
         显式结束会话（由服务层在前端信号时调用）。
 
         确保前端手动结束时也会触发 Markdown 构建。
+
+        Returns:
+            dict with keys: message (str), title (str)
         """
         if self.phase == SessionPhase.CLOSED:
-            return "会话已关闭"
+            return {"message": "会话已关闭", "title": ""}
 
         if self.interview_agent:
             self.conversation_history = list(self.interview_agent.conversation_history)
@@ -722,7 +730,7 @@ class InterviewSessionAgent:
                     session_summary="用户初始化对话结束归档"
                 )
             self.phase = SessionPhase.CLOSED
-            return "今天的采访就到这里啦，非常感谢您的分享。期待下次再聊！"
+            return {"message": "今天的采访就到这里啦，非常感谢您的分享。期待下次再聊！", "title": "基本信息收集"}
 
         if self.conversation_history:
             await self.archive_tool.archive_conversation(
@@ -732,7 +740,7 @@ class InterviewSessionAgent:
             )
 
         self.phase = SessionPhase.CLOSED
-        return "今天的采访就到这里啦，非常感谢您的分享。期待下次再聊！"
+        return {"message": "今天的采访就到这里啦，非常感谢您的分享。期待下次再聊！", "title": ""}
     
     def _build_resume_analysis_prompt(self, history: list) -> str:
         """

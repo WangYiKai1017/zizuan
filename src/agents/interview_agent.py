@@ -364,13 +364,32 @@ class InterviewAgent:
         collected_events = await self._extract_collected_events()
         prompt = prompt.replace("{{collected_events}}", collected_events)
 
-        ending_message = await self.llm_service.invoke(
+        ending_result = await self.llm_service.invoke(
             prompt=prompt,
             temperature=0.7,
             history=self.conversation_history,
+            response_format={"type": "json_object"},
             trace_node="ending.generate_summary",
         )
-        ending_message = ending_message.content
+
+        # 解析 JSON 响应，提取 title 和 message
+        title = ""
+        ending_message = ""
+        try:
+            content = ending_result.content
+            if isinstance(content, dict):
+                title = str(content.get("title", "")).strip()
+                ending_message = str(content.get("message", "")).strip()
+            else:
+                parsed = json.loads(content)
+                title = str(parsed.get("title", "")).strip()
+                ending_message = str(parsed.get("message", "")).strip()
+        except (json.JSONDecodeError, TypeError) as e:
+            logger.warning(f"Failed to parse ending JSON, falling back to raw content: {e}")
+            ending_message = ending_result.content if isinstance(ending_result.content, str) else str(ending_result.content)
+
+        if not ending_message:
+            ending_message = f"{self.address_style or '您'}，今天和您聊天很愉快，谢谢您的分享！下次我们继续聊，祝您生活愉快！"
 
         # 保存会话总结
         self.session_summary = ending_message
@@ -379,6 +398,7 @@ class InterviewAgent:
         next_questions = await self._generate_next_session_questions()
 
         return {
+            "title": title,
             "message": ending_message,
             "next_questions": next_questions,
             "summary": ending_message,

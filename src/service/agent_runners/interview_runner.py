@@ -124,17 +124,24 @@ class InterviewRunner:
         agent = await session_manager.get_interview_agent(self.user_id)
 
         ending_message = ""
+        title = ""
         archived = False
         if agent is not None:
             with observability_context(self._build_trace_context(
                 operation="end",
                 phase=agent.phase.value if hasattr(agent.phase, 'value') else str(agent.phase),
             )):
-                ending_message = await agent.end_session()
+                end_result = await agent.end_session()
             archived = True
             phase_reached = agent.phase.value if hasattr(agent.phase, 'value') else str(agent.phase)
             total_turns = len(getattr(agent, 'conversation_history', []) or [])
             structured_archive = getattr(agent, "structured_archive_result", None)
+            # end_session() now returns a dict with message and title
+            if isinstance(end_result, dict):
+                ending_message = end_result.get("message", "")
+                title = end_result.get("title", "")
+            else:
+                ending_message = str(end_result)
         else:
             phase_reached = "unknown"
             total_turns = 0
@@ -147,6 +154,7 @@ class InterviewRunner:
         summary = {
             "status": "ended",
             "session_id": self.session_id,
+            "title": title,
             "summary": {
                 "total_turns": total_turns,
                 "phase_reached": phase_reached,
