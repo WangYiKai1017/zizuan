@@ -184,6 +184,8 @@ data: {"code": "AGENT_ERROR", "message": "LLM 服务调用失败", "recoverable"
 
 启动一次新的采访会话。服务端创建 `InterviewSessionAgent` 实例，根据用户知识库状态决定进入信息收集或直接采访。
 
+**幂等性：** 如果该用户已有一个活跃的采访会话（未调用 `/end`），重复调用本接口不会创建新的 Agent，而是复用已有会话，返回 `"reused": true`，原有对话历史和阶段状态保持不变。
+
 **请求体：**
 
 ```json
@@ -194,14 +196,41 @@ data: {"code": "AGENT_ERROR", "message": "LLM 服务调用失败", "recoverable"
 
 **响应：** SSE 流
 
+**场景一：新建会话**
+
 ```
 event: session_started
-data: {"session_id": "sess_20260516_103000_abc123", "user_id": "test_user002", "phase": "profile", "timestamp": "2026-05-16T10:30:00+08:00"}
+data: {"session_id": "sess_20260516_103000_abc123", "user_id": "test_user002", "phase": "profile", "reused": false, "timestamp": "2026-05-16T10:30:00+08:00"}
 
 event: agent_message
 data: {"session_id": "sess_20260516_103000_abc123", "message": "您好！我是您的传记采访助手。在开始之前，我想先了解一些您的基本信息。请问您怎么称呼？", "phase": "profile", "timestamp": "2026-05-16T10:30:01+08:00"}
 
+event: done
+data: {"message": "会话已建立", "timestamp": "2026-05-16T10:30:02+08:00"}
 ```
+
+**场景二：复用已有会话（重复调用）**
+
+```
+event: session_started
+data: {"session_id": "sess_20260516_103000_abc123", "user_id": "test_user002", "phase": "interview", "reused": true, "timestamp": "2026-05-16T10:32:00+08:00"}
+
+event: agent_message
+data: {"session_id": "sess_20260516_103000_abc123", "message": "当前会话已存在，我们继续吧！", "phase": "interview", "timestamp": "2026-05-16T10:32:01+08:00"}
+
+event: done
+data: {"message": "会话已建立", "timestamp": "2026-05-16T10:32:02+08:00"}
+```
+
+**`session_started` 字段说明：**
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `session_id` | string | 会话标识 |
+| `user_id` | string | 用户标识 |
+| `phase` | string | 当前会话阶段 |
+| `reused` | boolean | `false` = 新建会话；`true` = 复用已有会话，Agent 未重建 |
+| `timestamp` | string | 事件时间戳 |
 
 **phase 枚举值：**
 

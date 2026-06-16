@@ -65,6 +65,7 @@ class InterviewRunner:
             "session_id": self.session_id,
             "user_id": self.user_id,
             "phase": agent.phase.value if hasattr(agent.phase, 'value') else str(agent.phase),
+            "reused": False,
         })
         await self.emitter.emit("agent_message", {
             "session_id": self.session_id,

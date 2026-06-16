@@ -153,6 +153,28 @@ async def start_interview(request: UserIdRequest):
         raise
 
     api_observation.set_session_id(session_id)
+
+    # Idempotency: if an agent already exists for this session, reuse it instead of
+    # creating a new one (which would discard conversation history and phase state).
+    existing_agent = await session_manager.get_interview_agent(request.user_id)
+    if existing_agent is not None:
+        emitter = SSEEmitter()
+        phase = existing_agent.phase.value if hasattr(existing_agent.phase, 'value') else str(existing_agent.phase)
+        await emitter.emit("session_started", {
+            "session_id": session_id,
+            "user_id": request.user_id,
+            "phase": phase,
+            "reused": True,
+        })
+        await emitter.emit("agent_message", {
+            "session_id": session_id,
+            "message": "当前会话已存在，我们继续吧！",
+            "phase": phase,
+        })
+        await emitter.emit_done("会话已建立")
+        api_observation.end(status="completed", output={"reused": True})
+        return EventSourceResponse(emitter.stream())
+
     emitter = SSEEmitter()
     runner = InterviewRunner(
         user_id=request.user_id,
