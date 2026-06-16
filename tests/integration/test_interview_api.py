@@ -328,6 +328,42 @@ def main(argv: list[str] | None = None) -> int:
             return summarize("Interview API happy path E2E", False, failures)
         info(f"session_id = {session_id}")
 
+        # Verify reused=false on first call
+        session_started_events = [e for e in start_events if e[0] == "session_started"]
+        if session_started_events:
+            first_started = session_started_events[0][1]
+            if first_started.get("reused") is not False:
+                failures.append(
+                    f"start: expected reused=false on first call, got {first_started.get('reused')!r}"
+                )
+
+        section("Start Interview (Idempotency)")
+        reuse_events, reuse_session_id = consume_sse(
+            "POST",
+            f"{base_url}/api/interview/start",
+            json_body={"user_id": user_id},
+            capture_session=True,
+        )
+        if reuse_session_id != session_id:
+            failures.append(
+                f"start idempotency: expected same session_id={session_id!r}, "
+                f"got {reuse_session_id!r}"
+            )
+        reuse_started = [e for e in reuse_events if e[0] == "session_started"]
+        if reuse_started:
+            reused_data = reuse_started[0][1]
+            if reused_data.get("reused") is not True:
+                failures.append(
+                    f"start idempotency: expected reused=true, got {reused_data.get('reused')!r}"
+                )
+        reuse_messages = [e for e in reuse_events if e[0] == "agent_message"]
+        if reuse_messages:
+            msg_text = reuse_messages[0][1].get("message", "")
+            if "当前会话已存在" not in msg_text:
+                failures.append(
+                    f"start idempotency: expected '当前会话已存在' in message, got {msg_text!r}"
+                )
+
         section("Send Messages")
         for index, message in enumerate(INTERVIEW_MESSAGES, start=1):
             info(f"message {index}: {message}")
@@ -369,6 +405,14 @@ def main(argv: list[str] | None = None) -> int:
                 failures.append(
                     f"end: expected session_id={session_id!r}, got {body.get('session_id')!r}"
                 )
+            # Verify title field exists and is a non-empty string
+            title = body.get("title")
+            if not isinstance(title, str) or not title.strip():
+                failures.append(
+                    f"end: expected non-empty string title, got {title!r}"
+                )
+            else:
+                info(f"end: title = {title!r}")
             structured_archive = body.get("structured_archive")
             if not isinstance(structured_archive, dict):
                 failures.append("end: missing structured_archive object")
