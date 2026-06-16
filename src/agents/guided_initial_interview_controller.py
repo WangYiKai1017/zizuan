@@ -141,9 +141,10 @@ class GuidedInitialInterviewController:
         if not current_question:
             state["guided_completed"] = True
             self.save_state(state)
+            transition = await self._free_interview_transition(address_style, user_input)
             return GuidedDecision(
                 result=QuestionResult(
-                    question=self._free_interview_transition(address_style),
+                    question=transition,
                     source="generated",
                     candidate_question_id=None,
                     topic_switched=True,
@@ -169,7 +170,7 @@ class GuidedInitialInterviewController:
                     "followup_count": before_state.get("current_question_followup_count", 0),
                 },
             ) as observation:
-                result = self._advance_to_next_question(state, address_style)
+                result = await self._advance_to_next_question(state, address_style, current_question, user_input)
                 if observation is not None:
                     observation.update(output={
                         "question": result.question,
@@ -216,7 +217,13 @@ class GuidedInitialInterviewController:
                 current_question["id"],
             )
             state["current_question_followup_count"] = 0
-            next_question = self._next_question_after(state, current_question["id"])
+            # Theme-based navigation: use LLM-specified next_question_id if valid
+            next_qid = decision.get("next_question_id")
+            next_question = None
+            if next_qid and next_qid in self.question_by_id and next_qid not in set(state.get("completed_question_ids", [])):
+                next_question = self.question_by_id[next_qid]
+            if not next_question:
+                next_question = self._next_question_after(state, current_question["id"])
             if next_question:
                 state["current_question_id"] = next_question["id"]
             else:
@@ -301,8 +308,14 @@ class GuidedInitialInterviewController:
                 return question
         return self._first_uncompleted_question(list(completed))
 
-    def _advance_to_next_question(self, state: Dict[str, Any], address_style: str) -> QuestionResult:
-        current_question = self._current_question(state)
+    async def _advance_to_next_question(
+        self,
+        state: Dict[str, Any],
+        address_style: str,
+        current_question: Optional[Dict[str, str]] = None,
+        user_input: str = "",
+    ) -> QuestionResult:
+        current_question = current_question or self._current_question(state)
         if current_question:
             state["completed_question_ids"] = self._append_unique(
                 state.get("completed_question_ids", []),
@@ -311,14 +324,42 @@ class GuidedInitialInterviewController:
         next_question = self._next_question_after(state, current_question["id"]) if current_question else None
         state["current_question_followup_count"] = 0
 
+        address = address_style or "您"
+
         if next_question:
             state["current_question_id"] = next_question["id"]
             self.save_state(state)
-            return QuestionResult(
-                question=(
+
+            # Use LLM to generate a natural transition instead of hardcoded text.
+            transition_text = None
+            try:
+                current_q_text = current_question["question"] if current_question else ""
+                next_q_text = next_question["question"]
+                prompt = (
+                    f"你正在采访一位老人。当前话题「{current_q_text}」已经聊得差不多了，"
+                    f"用户最后说：「{user_input}」\n\n"
+                    f"现在要自然过渡到下一个话题「{next_q_text}」。\n"
+                    f"请生成一段温暖、自然的过渡语（1-2句），用用户刚才提到的内容做桥梁，"
+                    f"自然地引出新话题。称呼用「{address}」。\n"
+                    f"不要说「接下来」「换个话题」等生硬用语。只输出过渡语本身，不要其他内容。"
+                )
+                result = await self.llm_service.invoke(
+                    prompt=prompt,
+                    temperature=0.7,
+                    trace_node="guided.advance_transition",
+                )
+                transition_text = str(result.content).strip()
+            except Exception as e:
+                logger.warning("Failed to generate transition: %s", e)
+
+            if not transition_text:
+                transition_text = (
                     f"那我们先把这段放一放，接着往下聊聊。"
-                    f"{address_style or '您'}，{next_question['question']}"
-                ),
+                    f"{address}，{next_question['question']}"
+                )
+
+            return QuestionResult(
+                question=transition_text,
                 source="generated",
                 candidate_question_id=None,
                 topic_switched=True,
@@ -328,16 +369,37 @@ class GuidedInitialInterviewController:
         state["guided_completed"] = True
         state["current_question_id"] = None
         self.save_state(state)
+
+        transition_text = await self._free_interview_transition(address_style, user_input)
         return QuestionResult(
-            question=self._free_interview_transition(address_style),
+            question=transition_text,
             source="generated",
             candidate_question_id=None,
             topic_switched=True,
             new_topic="自由采访",
         )
 
-    def _free_interview_transition(self, address_style: str) -> str:
+    async def _free_interview_transition(self, address_style: str, user_input: str = "") -> str:
         address = address_style or "您"
+        try:
+            prompt = (
+                f"你正在采访一位老人，已经完成了预设问题阶段。"
+                f"用户最后说：「{user_input}」\n\n"
+                f"请生成一段温暖的过渡语（2-3句），总结刚才聊得很有收获，"
+                f"然后邀请老人自由选择接下来想聊的话题。称呼用「{address}」。\n"
+                f"语气亲切自然，像晚辈和长辈聊天。只输出过渡语本身。"
+            )
+            result = await self.llm_service.invoke(
+                prompt=prompt,
+                temperature=0.7,
+                trace_node="guided.free_interview_transition",
+            )
+            text = str(result.content).strip()
+            if text:
+                return text
+        except Exception as e:
+            logger.warning("Failed to generate free interview transition: %s", e)
+
         return (
             f"{address}，刚才这些回忆已经把人生几个重要阶段都串起来了。"
             "接下来我们可以顺着您最想多讲的地方慢慢展开，您现在最想从哪段经历继续聊？"
@@ -365,13 +427,13 @@ class GuidedInitialInterviewController:
         ]
         remaining_formatted = "\n".join(
             f"- [{q['id']}] {q.get('stage_label') or q['stage']} ({q['stage']})：{q['question']}"
-            for q in remaining_questions[:5]
+            for q in remaining_questions[:10]
         )
         current_focus = current_question.get("focus") or "无"
         current_stage_label = current_question.get("stage_label") or current_question["stage"]
 
         return f"""## 任务
-你正在执行初期受控采访。请只围绕当前预设问题做判断，不要自由发散太远。
+你正在执行初期受控采访。围绕当前预设问题做判断，但结束和过渡由你灵活把控。
 
 ## 当前预设问题
 - id: {current_question['id']}
@@ -379,7 +441,6 @@ class GuidedInitialInterviewController:
 - 问题: {current_question['question']}
 - 挖掘方向: {current_focus}
 - 当前问题已追问次数: {state.get('current_question_followup_count', 0)}
-- 每个预设问题最多追问次数: {MAX_FOLLOWUPS_PER_GUIDED_QUESTION}
 
 ## 用户刚才的回答
 {user_input}
@@ -390,19 +451,47 @@ class GuidedInitialInterviewController:
 ## 强相关候选问题
 {candidate_questions_formatted}
 
-## 后续预设问题顺序参考
+## 剩余预设问题（供选择跳转）
 {remaining_formatted or '无'}
 
 ## 对被采访者的称呼
 {address_style or '您'}
 
 ## 决策规则
-1. 如果用户已经给出当前预设问题的具体细节，可以自然过渡到下一个预设问题。
-2. 如果当前回答很笼统，并且追问次数还没有达到上限，可以温和地换个角度追问当前问题。
-3. 如果候选问题和用户刚才主动提到的内容强相关，可以把候选问题改写成当前话题下的一句追问；这种情况 source 必须是 candidate_question。
-4. 如果用户提到强情绪、亲人离世、疾病、创伤或重大转折，先接住并短暂追问，不要硬切题。
-5. 不要说“固定问题”“清单”“业务分析师”或“候选问题”。
-6. 输出的问题必须自然、口语化、亲切。
+
+### 何时结束当前话题（标记 guided_question_completed = true）
+判断当前预设问题是否已"挖透了"，满足以下任一条件即可结束，不必全部满足：
+
+1. **叙事完整性**：用户的回答已构成一个较完整的故事弧。后台默默核对当前话题是否集齐了这些拼图：
+   - 场景（时间、地点、时代背景）
+   - 冲突/挑战（遇到了什么困难？有什么两难选择？）
+   - 行动（老人具体做了什么？）
+   - 转折（事情怎么解决的？）
+   - 反思（现在的老人如何看待当年的自己？这件事如何塑造了今天的他？）
+   不必五项全齐——用户回答了"发生了什么"并表达了"当时怎么想的/感受如何"，基本就算完整。
+
+2. **情绪与细节饱和度**：连续追问中用户开始重复已有观点，或回答变得简短（"嗯"、"对"、"就这样"、"没啥了"），或情感表达趋于平缓，说明这个话题已触及天花板。
+
+3. **隐性诉求已显性化**：老人的表层叙述下常有深层心理需求（如讲"生活不便"实际想表达"渴望被认可"或"孤独感"）。如果你已捕捉并回应了这种话外之音，且用户给出正向反馈（"你懂我"、"确实是这么回事"），该话题可以结束。
+
+4. **疲劳与抗拒信号**：用户明确表示"不想说了"、"记不清了"、"算了吧"——必须立即标记完成，给予安抚并轻柔过渡。
+
+如果用户回答笼统且以上信号都没出现，可以换个角度温和追问。
+
+### 如何过渡到下一个话题（不要按顺序问！）
+当 guided_question_completed = true 时，**不要死板地按清单顺序走**。从用户刚才回答中捕捉关键词和主题，在"剩余预设问题"中选最相关的一个跳转，并在 next_question_id 中指定。
+
+**举例**：老人在谈工作时提到了改变命运的恩师，而剩余预设问题中有关于人际关系/师长的题目，应优先跳转到那个问题，而不是硬切到工作话题的下一个。
+
+过渡语应该用用户刚提到的内容做自然桥梁，比如："您刚才提到王老师，除了工作上的指导，他在生活上是个怎样的人呢？"
+
+### 其他规则
+- 如果候选问题和用户主动提到的内容强相关，可以把它改写成当前话题下的追问，source 必须是 candidate_question。
+- 如果用户提到强情绪、亲人离世、疾病、创伤或重大转折，先接住情感再追问，不要硬切。
+- 语气必须温暖、口语化、亲切，像晚辈和长辈聊天。
+- 绝不说"固定问题""清单""业务分析师"或"候选问题"。
+- 捕捉用户言语背后的情感（孤独感、自豪感、遗憾等），适当回应和共情。
+- 当用户表现出疲劳或抗拒时，先安抚情绪，再轻柔结束话题。
 
 ## 输出格式
 只输出 JSON：
@@ -412,6 +501,7 @@ class GuidedInitialInterviewController:
   "candidate_question_id": "候选问题id或null",
   "guided_question_completed": true 或 false,
   "move_to_next_guided_question": true 或 false,
+  "next_question_id": "当前话题完成时，指定下一个最相关的预设问题id（从剩余预设问题中选）；未完成时为null",
   "topic_switched": true 或 false,
   "new_topic": "新话题描述或null"
 }}
@@ -449,6 +539,7 @@ class GuidedInitialInterviewController:
             "candidate_question_id": qid,
             "guided_question_completed": bool(parsed.get("guided_question_completed", False)),
             "move_to_next_guided_question": bool(parsed.get("move_to_next_guided_question", False)),
+            "next_question_id": parsed.get("next_question_id"),
             "topic_switched": bool(parsed.get("topic_switched", False)),
             "new_topic": parsed.get("new_topic"),
         }
