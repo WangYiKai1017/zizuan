@@ -207,16 +207,28 @@ class GuidedInitialInterviewController:
                 "question": f"{address_style or '您'}能再多讲一点当时的细节吗？",
                 "source": "generated",
                 "candidate_question_id": None,
-                "guided_question_completed": False,
-                "move_to_next_guided_question": False,
+                "question_completed": False,
+                "should_transition": False,
             }
 
-        if decision["guided_question_completed"] or decision["move_to_next_guided_question"]:
+        # Two independent decisions: completion and transition
+        question_completed = decision["question_completed"]
+        should_transition = decision["should_transition"]
+
+        # Completion: mark question as done (but don't change current_question_id here)
+        if question_completed:
             state["completed_question_ids"] = self._append_unique(
                 state.get("completed_question_ids", []),
                 current_question["id"],
             )
             state["current_question_followup_count"] = 0
+
+        # Transition: move to a different question
+        if should_transition:
+            # If transitioning without marking complete, still reset followup count
+            if not question_completed:
+                state["current_question_followup_count"] = 0
+
             # Theme-based navigation: use LLM-specified next_question_id if valid
             next_qid = decision.get("next_question_id")
             next_question = None
@@ -228,7 +240,16 @@ class GuidedInitialInterviewController:
                 state["current_question_id"] = next_question["id"]
             else:
                 state["guided_completed"] = True
+        elif question_completed:
+            # Completed but not transitioning: advance to next sequential question
+            # (staying on a completed question would cause the LLM to re-ask it)
+            next_question = self._next_question_after(state, current_question["id"])
+            if next_question:
+                state["current_question_id"] = next_question["id"]
+            else:
+                state["guided_completed"] = True
         else:
+            # Neither completed nor transitioning: increment followup count
             state["current_question_followup_count"] = state.get("current_question_followup_count", 0) + 1
 
         self.save_state(state)
@@ -459,8 +480,10 @@ class GuidedInitialInterviewController:
 
 ## 决策规则
 
-### 何时结束当前话题（标记 guided_question_completed = true）
-判断当前预设问题是否已"挖透了"，满足以下任一条件即可结束，不必全部满足：
+你需要做两个独立判断——"是否完成"和"是否跳转"，它们互不依赖：
+
+### 判断一：当前问题是否已完成？（question_completed）
+只有满足以下任一条件才标记 true，不要仅仅因为用户换话题了就标记完成：
 
 1. **叙事完整性**：用户的回答已构成一个较完整的故事弧。后台默默核对当前话题是否集齐了这些拼图：
    - 场景（时间、地点、时代背景）
@@ -476,10 +499,22 @@ class GuidedInitialInterviewController:
 
 4. **疲劳与抗拒信号**：用户明确表示"不想说了"、"记不清了"、"算了吧"——必须立即标记完成，给予安抚并轻柔过渡。
 
-如果用户回答笼统且以上信号都没出现，可以换个角度温和追问。
+如果用户回答笼统且以上信号都没出现，question_completed = false。
+**重要**：如果用户答非所问或跳到了另一个话题，当前问题并不算完成，question_completed 应为 false。
 
-### 如何过渡到下一个话题（不要按顺序问！）
-当 guided_question_completed = true 时，**不要死板地按清单顺序走**。从用户刚才回答中捕捉关键词和主题，在"剩余预设问题"中选最相关的一个跳转，并在 next_question_id 中指定。
+### 判断二：是否应该跳转到其他问题？（should_transition）
+以下情况标记 true：
+- 用户主动聊到另一个话题，顺着他的方向走
+- 当前话题已充分展开（即使未完成），可以先放一放
+- 用户给出疲劳/抗拒信号
+- 用户明确想换话题
+
+以下情况标记 false，继续追问当前问题：
+- 用户回答笼统，需要换角度追问
+- 当前问题刚提出，还没有充分展开
+
+### 跳转时的主题选择（不要按顺序问！）
+当 should_transition = true 时，**不要死板地按清单顺序走**。从用户刚才回答中捕捉关键词和主题，在"剩余预设问题"中选最相关的一个跳转，并在 next_question_id 中指定。
 
 **举例**：老人在谈工作时提到了改变命运的恩师，而剩余预设问题中有关于人际关系/师长的题目，应优先跳转到那个问题，而不是硬切到工作话题的下一个。
 
@@ -499,9 +534,9 @@ class GuidedInitialInterviewController:
   "question": "最终问出去的问题文本",
   "source": "generated" 或 "candidate_question",
   "candidate_question_id": "候选问题id或null",
-  "guided_question_completed": true 或 false,
-  "move_to_next_guided_question": true 或 false,
-  "next_question_id": "当前话题完成时，指定下一个最相关的预设问题id（从剩余预设问题中选）；未完成时为null",
+  "question_completed": true 或 false,
+  "should_transition": true 或 false,
+  "next_question_id": "should_transition为true时，指定下一个最相关的预设问题id（从剩余预设问题中选）；不跳转时为null",
   "topic_switched": true 或 false,
   "new_topic": "新话题描述或null"
 }}
@@ -537,8 +572,12 @@ class GuidedInitialInterviewController:
             "question": question,
             "source": source,
             "candidate_question_id": qid,
-            "guided_question_completed": bool(parsed.get("guided_question_completed", False)),
-            "move_to_next_guided_question": bool(parsed.get("move_to_next_guided_question", False)),
+            "question_completed": bool(
+                parsed.get("question_completed") or parsed.get("guided_question_completed", False)
+            ),
+            "should_transition": bool(
+                parsed.get("should_transition") or parsed.get("move_to_next_guided_question", False)
+            ),
             "next_question_id": parsed.get("next_question_id"),
             "topic_switched": bool(parsed.get("topic_switched", False)),
             "new_topic": parsed.get("new_topic"),
