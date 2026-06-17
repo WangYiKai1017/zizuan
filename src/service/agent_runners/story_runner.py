@@ -56,9 +56,14 @@ class StoryRunner(BaseAgentRunner):
         if not prompt:
             return ""
         try:
-            result = await image_service.generate(prompt)
-            image_abs_path = Path(kb_path) / "stories" / filename
-            await image_service.download(result.url, image_abs_path)
+            with observe_step(
+                "story_generation.generate_image",
+                as_type="tool",
+                input={"prompt": prompt[:100], "filename": filename},
+            ):
+                result = await image_service.generate(prompt)
+                image_abs_path = Path(kb_path) / "stories" / filename
+                await image_service.download(result.url, image_abs_path)
             logger.info("Image saved: %s", image_abs_path)
             return f"stories/{filename}"
         except ImageGenerationError as e:
@@ -79,12 +84,17 @@ class StoryRunner(BaseAgentRunner):
         if not prompts:
             return []
 
-        tasks = []
-        for i, prompt in enumerate(prompts[:4], start=1):
-            filename = f"{story_id}_illust_{i:02d}.png"
-            tasks.append(self._generate_image(image_service, prompt, filename, kb_path))
+        with observe_step(
+            "story_generation.generate_illustrations",
+            as_type="tool",
+            metadata={"count": len(prompts), "story_id": story_id},
+        ):
+            tasks = []
+            for i, prompt in enumerate(prompts[:4], start=1):
+                filename = f"{story_id}_illust_{i:02d}.png"
+                tasks.append(self._generate_image(image_service, prompt, filename, kb_path))
 
-        results = await asyncio.gather(*tasks)
+            results = await asyncio.gather(*tasks)
         return [path for path in results if path]
 
     async def run(self) -> None:

@@ -19,9 +19,13 @@ _TASK_URL = "/api/v1/tasks/{task_id}"
 _POLL_INTERVAL_SECONDS = 3.0
 _POLL_MAX_ATTEMPTS = 120  # 6 minutes max wait
 
-# Transient error retry configuration
+# Transient error retry configuration (for polling)
 _TRANSIENT_MAX_RETRIES = 3
 _TRANSIENT_RETRY_DELAY = 2.0
+
+# Generate retry configuration (for rate limiting / concurrency limits)
+_GENERATE_MAX_RETRIES = 3
+_GENERATE_RETRY_BASE_DELAY = 5.0  # exponential backoff: 5s, 10s, 20s
 
 
 @dataclass(frozen=True)
@@ -56,6 +60,8 @@ class ImageGenerationService:
     async def generate(self, prompt: str) -> ImageResult:
         """Submit image generation task and wait for completion.
 
+        Retries on rate limiting (429) or server errors (5xx) with exponential backoff.
+
         Args:
             prompt: English text description of the image to generate.
 
@@ -63,13 +69,44 @@ class ImageGenerationService:
             ImageResult with the generated image URL.
 
         Raises:
-            ImageGenerationError: If submission or generation fails.
+            ImageGenerationError: If submission or generation fails after all retries.
         """
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            task_id = await self._submit_task(client, prompt)
-            logger.info("Image generation task submitted: %s", task_id)
-            image_url = await self._poll_task(client, task_id)
-        return ImageResult(url=image_url, task_id=task_id)
+        last_error: Exception | None = None
+
+        for attempt in range(_GENERATE_MAX_RETRIES):
+            try:
+                async with httpx.AsyncClient(timeout=self.timeout) as client:
+                    task_id = await self._submit_task(client, prompt)
+                    logger.info("Image generation task submitted: %s", task_id)
+                    image_url = await self._poll_task(client, task_id)
+                return ImageResult(url=image_url, task_id=task_id)
+            except ImageGenerationError as e:
+                last_error = e
+                # Retry on rate limiting or server-side errors
+                error_msg = str(e)
+                is_retryable = (
+                    "429" in error_msg
+                    or "500" in error_msg
+                    or "502" in error_msg
+                    or "503" in error_msg
+                    or "rate" in error_msg.lower()
+                    or "concurrent" in error_msg.lower()
+                    or "throttl" in error_msg.lower()
+                    or "busy" in error_msg.lower()
+                    or "timed out" in error_msg.lower()
+                )
+                if not is_retryable or attempt >= _GENERATE_MAX_RETRIES - 1:
+                    raise
+                delay = _GENERATE_RETRY_BASE_DELAY * (2 ** attempt)
+                logger.warning(
+                    "Image generation failed (attempt %d/%d), retrying in %.0fs: %s",
+                    attempt + 1, _GENERATE_MAX_RETRIES, delay, e,
+                )
+                await asyncio.sleep(delay)
+
+        raise ImageGenerationError(
+            f"Image generation failed after {_GENERATE_MAX_RETRIES} retries: {last_error}"
+        )
 
     async def download(self, url: str, save_path: Path) -> Path:
         """Download image from URL and save to local path.

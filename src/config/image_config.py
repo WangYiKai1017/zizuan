@@ -22,7 +22,7 @@ def get_image_config() -> ImageConfig:
     Cached after first call. Call after load_dotenv() to ensure env vars are available.
     """
     return ImageConfig(
-        model_name=os.getenv("IMAGE_MODEL_NAME", "wan2.7-image"),
+        model_name=os.getenv("IMAGE_MODEL_NAME", "qwen-image-2.0"),
         api_key=os.getenv("DEEPSEEK_APIKEY") or "",
         size=os.getenv("IMAGE_SIZE", "1024*1024"),
         base_url=os.getenv("IMAGE_BASE_URL", "https://dashscope.aliyuncs.com"),
