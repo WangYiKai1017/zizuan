@@ -16,7 +16,7 @@ from src.config.llm_config import get_default_config
 from src.service.agent_runners.base_runner import BaseAgentRunner
 from src.services.image_generation_service import ImageGenerationError, ImageGenerationService
 from src.services.llm_service import LLMService
-from src.services.observability import get_observability_context, observability_context, observe_step
+from src.services.observability import observability_context, observe_step
 
 logger = logging.getLogger(__name__)
 
@@ -55,22 +55,21 @@ class StoryRunner(BaseAgentRunner):
         """Generate and download one image. Returns relative path or empty string on failure."""
         if not prompt:
             return ""
-        ctx = get_observability_context()
-        logger.info(
-            "_generate_image(%s): context=%s, trace_id=%s",
-            filename,
-            "active" if ctx else "NONE",
-            ctx.trace_id if ctx else "N/A",
-        )
         try:
             with observe_step(
                 "story_generation.generate_image",
                 as_type="tool",
-                input={"prompt": prompt[:100], "filename": filename},
-            ):
+                input={"prompt": prompt, "filename": filename, "model": image_service.model},
+            ) as observation:
                 result = await image_service.generate(prompt)
                 image_abs_path = Path(kb_path) / "stories" / filename
                 await image_service.download(result.url, image_abs_path)
+                if observation is not None:
+                    observation.update(output={
+                        "image_url": result.url,
+                        "task_id": result.task_id,
+                        "saved_path": f"stories/{filename}",
+                    })
             logger.info("Image saved: %s", image_abs_path)
             return f"stories/{filename}"
         except ImageGenerationError as e:
@@ -94,15 +93,20 @@ class StoryRunner(BaseAgentRunner):
         with observe_step(
             "story_generation.generate_illustrations",
             as_type="tool",
-            metadata={"count": len(prompts), "story_id": story_id},
-        ):
+            input={"prompts": prompts, "story_id": story_id, "model": image_service.model},
+            metadata={"count": len(prompts)},
+        ) as observation:
             tasks = []
             for i, prompt in enumerate(prompts[:4], start=1):
                 filename = f"{story_id}_illust_{i:02d}.png"
                 tasks.append(self._generate_image(image_service, prompt, filename, kb_path))
 
             results = await asyncio.gather(*tasks)
-        return [path for path in results if path]
+
+        paths = [path for path in results if path]
+        if observation is not None:
+            observation.update(output={"illustration_paths": paths, "success_count": len(paths)})
+        return paths
 
     async def run(self) -> None:
         kb_path = self._get_kb_path()
