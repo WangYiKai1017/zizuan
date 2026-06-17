@@ -51,6 +51,11 @@ class GeneratedStory:
     title: str
     body: str
     image_prompt: str = ""
+    illustration_prompts: list[str] = None
+
+    def __post_init__(self):
+        if self.illustration_prompts is None:
+            object.__setattr__(self, "illustration_prompts", [])
 
 
 @dataclass(frozen=True)
@@ -62,6 +67,11 @@ class SavedStory:
     life_stage: str
     event_paths: list[str]
     image_path: str = ""
+    illustration_paths: list[str] = None
+
+    def __post_init__(self):
+        if self.illustration_paths is None:
+            object.__setattr__(self, "illustration_paths", [])
 
 
 class StoryGenerationError(Exception):
@@ -195,6 +205,7 @@ class StoryGenerationAgent:
         events: list[StoryEvent],
         life_stage: str = "",
         image_path: str = "",
+        illustration_paths: list[str] | None = None,
     ) -> SavedStory:
         """Save story markdown first, then persist consumed event paths."""
         self.stories_dir.mkdir(parents=True, exist_ok=True)
@@ -204,6 +215,7 @@ class StoryGenerationAgent:
         story_rel_path = f"stories/{story_id}.md"
         story_abs_path = self.kb_path / story_rel_path
         event_paths = [event.path for event in events]
+        illustration_paths = illustration_paths or []
 
         content = self._build_story_markdown(
             title=story.title,
@@ -223,6 +235,8 @@ class StoryGenerationAgent:
                 created_at=now.isoformat(),
                 image_path=image_path,
                 image_prompt=story.image_prompt,
+                illustration_prompts=story.illustration_prompts,
+                illustration_paths=illustration_paths,
             )
         except Exception as e:
             raise StoryStateSaveError(
@@ -236,6 +250,7 @@ class StoryGenerationAgent:
             life_stage=life_stage,
             event_paths=event_paths,
             image_path=image_path,
+            illustration_paths=illustration_paths,
         )
 
     def _load_state(self) -> dict[str, Any]:
@@ -261,13 +276,19 @@ class StoryGenerationAgent:
         tmp_path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
         tmp_path.replace(self.state_path)
 
-    def update_story_image_path(self, story_id: str, image_path: str) -> None:
-        """Update the image_path for an existing story in state."""
+    def update_story_images(
+        self,
+        story_id: str,
+        image_path: str,
+        illustration_paths: list[str],
+    ) -> None:
+        """Update image_path and illustration_paths for an existing story in state."""
         state = self._load_state()
         stories = state.get("stories", [])
         for story in stories:
             if isinstance(story, dict) and story.get("story_id") == story_id:
                 story["image_path"] = image_path
+                story["illustration_paths"] = illustration_paths
                 break
         self._save_state(state)
 
@@ -280,6 +301,8 @@ class StoryGenerationAgent:
         created_at: str,
         image_path: str = "",
         image_prompt: str = "",
+        illustration_prompts: list[str] | None = None,
+        illustration_paths: list[str] | None = None,
     ) -> None:
         state = self._load_state()
         existing = list(dict.fromkeys(state.get("generated_event_paths", [])))
@@ -296,6 +319,8 @@ class StoryGenerationAgent:
             "created_at": created_at,
             "image_path": image_path,
             "image_prompt": image_prompt,
+            "illustration_prompts": illustration_prompts or [],
+            "illustration_paths": illustration_paths or [],
         })
 
         self._save_state({
@@ -326,7 +351,13 @@ JSON 格式：
 {{
   "title": "故事标题",
   "body": "故事正文",
-  "image_prompt": "English description for a cover illustration. Pencil sketch style, realistic shading, vintage newspaper illustration feel, warm nostalgic tone, soft textures. Describe the core scene or imagery of the story in under 100 words."
+  "image_prompt": "English description for a cover illustration. Pencil sketch style, realistic shading, vintage newspaper illustration feel, warm nostalgic tone, soft textures. Describe the core scene or imagery of the story in under 100 words.",
+  "illustration_prompts": [
+    "English description for illustration 1: a key scene or moment from the story. Pencil sketch style, realistic shading, vintage feel. Under 80 words.",
+    "English description for illustration 2: a different scene or emotional moment. Same style. Under 80 words.",
+    "English description for illustration 3: another distinct scene or detail. Same style. Under 80 words.",
+    "English description for illustration 4: a closing image or reflective moment. Same style. Under 80 words."
+  ]
 }}
 """
 
@@ -371,11 +402,18 @@ JSON 格式：
         title = str(data.get("title") or "").strip()
         body = str(data.get("body") or "").strip()
         image_prompt = str(data.get("image_prompt") or "").strip()
+        raw_prompts = data.get("illustration_prompts") or []
+        illustration_prompts = [str(p).strip() for p in raw_prompts if isinstance(p, str) and p.strip()]
         if not title:
             raise StoryOutputInvalidError("故事标题为空")
         if len(body) < 50:
             raise StoryOutputInvalidError("故事正文过短或为空")
-        return GeneratedStory(title=title, body=body, image_prompt=image_prompt)
+        return GeneratedStory(
+            title=title,
+            body=body,
+            image_prompt=image_prompt,
+            illustration_prompts=illustration_prompts,
+        )
 
     def _build_story_markdown(
         self,

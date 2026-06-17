@@ -146,6 +146,7 @@ def _list_stories_for_stage(kb_path: Path, life_stage: str) -> list[dict[str, An
             "source_event_count": len(event_paths),
             "event_paths": event_paths,
             "image_path": str(state_item.get("image_path") or ""),
+            "illustration_paths": list(state_item.get("illustration_paths") or []),
             "size": stat.st_size,
             "last_modified": last_modified,
         })

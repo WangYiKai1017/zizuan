@@ -405,8 +405,23 @@ def verify_story_generation(user_kb: Path) -> list[str]:
             if size < 100:
                 failures.append(f"story_gen: cover image too small ({size} bytes), likely corrupt")
     else:
-        # image_path empty is acceptable (API key might not be configured in test env)
         info("story_gen: image_path is empty (image generation may have been skipped)")
+
+    # Verify illustration files
+    illustration_paths = story_entry.get("illustration_paths", [])
+    info(f"illustration_paths = {illustration_paths}")
+    if not illustration_paths:
+        info("story_gen: illustration_paths is empty (image generation may have been skipped)")
+    else:
+        for illust_path in illustration_paths:
+            illust_file = user_kb / illust_path
+            if not illust_file.exists():
+                failures.append(f"story_gen: illustration not found at {illust_path}")
+            else:
+                size = illust_file.stat().st_size
+                info(f"illustration exists: {illust_file} ({size} bytes)")
+                if size < 100:
+                    failures.append(f"story_gen: illustration too small ({size} bytes): {illust_path}")
 
     return failures
 
@@ -629,9 +644,13 @@ def main(argv: list[str] | None = None) -> int:
         if saved_events:
             saved_data = saved_events[0][1]
             image_path_val = saved_data.get("image_path")
+            illust_paths_val = saved_data.get("illustration_paths")
             info(f"saved event image_path = {image_path_val!r}")
+            info(f"saved event illustration_paths = {illust_paths_val!r}")
             if image_path_val is None:
                 failures.append("story_gen: 'saved' event missing image_path field")
+            if illust_paths_val is None:
+                failures.append("story_gen: 'saved' event missing illustration_paths field")
 
         section("Verify Story Generation")
         failures.extend(verify_story_generation(user_kb))
@@ -656,6 +675,10 @@ def main(argv: list[str] | None = None) -> int:
                     failures.append("story_list: story missing image_path field")
                 else:
                     info(f"story_list image_path = {first_story['image_path']!r}")
+                if "illustration_paths" not in first_story:
+                    failures.append("story_list: story missing illustration_paths field")
+                else:
+                    info(f"story_list illustration_paths = {first_story['illustration_paths']!r}")
 
         section("Verify Event Stage Files")
         failures.extend(verify_event_classification(user_kb))

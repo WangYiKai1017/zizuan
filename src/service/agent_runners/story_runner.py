@@ -1,5 +1,6 @@
 """Story generation runner — wraps StoryGenerationAgent for SSE streaming."""
 
+import asyncio
 import logging
 from pathlib import Path
 
@@ -44,32 +45,47 @@ class StoryRunner(BaseAgentRunner):
             size=config.size,
         )
 
-    async def _generate_cover_image(
+    async def _generate_image(
         self,
         image_service: ImageGenerationService,
-        image_prompt: str,
-        story_id: str,
+        prompt: str,
+        filename: str,
         kb_path: str,
     ) -> str:
-        """Generate and download cover image. Returns relative path or empty string on failure."""
-        if not image_prompt:
-            logger.info("No image_prompt for story %s, skipping image generation", story_id)
+        """Generate and download one image. Returns relative path or empty string on failure."""
+        if not prompt:
             return ""
-
         try:
-            with observe_step("story_generation.generate_image", as_type="tool"):
-                result = await image_service.generate(image_prompt)
-                image_filename = f"{story_id}_cover.png"
-                image_abs_path = Path(kb_path) / "stories" / image_filename
-                await image_service.download(result.url, image_abs_path)
-                logger.info("Cover image saved: %s", image_abs_path)
-                return f"stories/{image_filename}"
+            result = await image_service.generate(prompt)
+            image_abs_path = Path(kb_path) / "stories" / filename
+            await image_service.download(result.url, image_abs_path)
+            logger.info("Image saved: %s", image_abs_path)
+            return f"stories/{filename}"
         except ImageGenerationError as e:
-            logger.warning("Image generation failed for story %s: %s", story_id, e)
+            logger.warning("Image generation failed for %s: %s", filename, e)
             return ""
         except Exception as e:
-            logger.warning("Unexpected error generating image for story %s: %s", story_id, e)
+            logger.warning("Unexpected error generating image %s: %s", filename, e)
             return ""
+
+    async def _generate_illustrations(
+        self,
+        image_service: ImageGenerationService,
+        prompts: list[str],
+        story_id: str,
+        kb_path: str,
+    ) -> list[str]:
+        """Generate up to 4 illustration images in parallel. Returns list of relative paths."""
+        if not prompts:
+            return []
+
+        tasks = []
+        for i, prompt in enumerate(prompts[:4], start=1):
+            filename = f"{story_id}_illust_{i:02d}.png"
+            tasks.append(self._generate_image(image_service, prompt, filename, kb_path))
+
+        results = await asyncio.gather(*tasks)
+        return [path for path in results if path]
 
     async def run(self) -> None:
         kb_path = self._get_kb_path()
@@ -165,29 +181,58 @@ class StoryRunner(BaseAgentRunner):
                         await self.emitter.emit("stage_failed", failed_stages[-1])
                         continue
 
-                    # Generate cover image
+                    # Generate cover image + illustrations in parallel
                     image_path = ""
-                    if image_service and story.image_prompt:
+                    illustration_paths: list[str] = []
+                    if image_service:
                         await self.emitter.emit("generating_image", {
                             "step": "generating_image",
-                            "message": f"正在为{stage_label}故事生成封面配图...",
+                            "message": f"正在为{stage_label}故事生成封面和插图...",
                             "story_id": saved.story_id,
                             "life_stage": life_stage,
                             "life_stage_label": stage_label,
+                            "illustration_count": len(story.illustration_prompts),
                         })
-                        image_path = await self._generate_cover_image(
+
+                        cover_task = self._generate_image(
                             image_service,
                             story.image_prompt,
+                            f"{saved.story_id}_cover.png",
+                            kb_path,
+                        ) if story.image_prompt else None
+
+                        illust_task = self._generate_illustrations(
+                            image_service,
+                            story.illustration_prompts,
                             saved.story_id,
                             kb_path,
-                        )
-                        # Update state with image_path (failure here should not kill the stage)
-                        if image_path:
+                        ) if story.illustration_prompts else None
+
+                        # Run cover and illustration tasks concurrently
+                        coros = []
+                        if cover_task:
+                            coros.append(cover_task)
+                        if illust_task:
+                            coros.append(illust_task)
+
+                        if coros:
+                            results = await asyncio.gather(*coros)
+                            idx = 0
+                            if cover_task:
+                                image_path = results[idx]
+                                idx += 1
+                            if illust_task:
+                                illustration_paths = results[idx]
+
+                        # Update state with image paths (failure should not kill the stage)
+                        if image_path or illustration_paths:
                             try:
-                                agent.update_story_image_path(saved.story_id, image_path)
+                                agent.update_story_images(
+                                    saved.story_id, image_path, illustration_paths,
+                                )
                             except Exception as e:
                                 logger.warning(
-                                    "Failed to update image_path in state for story %s: %s",
+                                    "Failed to update image paths in state for story %s: %s",
                                     saved.story_id, e,
                                 )
 
@@ -201,6 +246,7 @@ class StoryRunner(BaseAgentRunner):
                         "life_stage_label": stage_label,
                         "consumed_event_count": len(saved.event_paths),
                         "image_path": image_path,
+                        "illustration_paths": illustration_paths,
                     }
                     saved_stories.append(saved_payload)
                     await self.emitter.emit("saved", saved_payload)
