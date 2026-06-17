@@ -628,7 +628,7 @@ event: generating
 data: {"step": "generating", "message": "正在根据童年时期最早的 15 个事件生成故事...", "life_stage": "childhood", "life_stage_label": "童年时期", "selected_event_count": 15, "selected_event_paths": ["events/childhood/出生.md"], "timestamp": "2026-06-05T10:00:02+08:00"}
 
 event: generating_image
-data: {"step": "generating_image", "message": "正在为童年时期故事生成封面配图...", "story_id": "childhood_story_20260605_100030", "life_stage": "childhood", "life_stage_label": "童年时期", "timestamp": "2026-06-05T10:00:25+08:00"}
+data: {"step": "generating_image", "message": "正在为童年时期故事生成封面和插图...", "story_id": "childhood_story_20260605_100030", "life_stage": "childhood", "life_stage_label": "童年时期", "illustration_count": 4, "timestamp": "2026-06-05T10:00:25+08:00"}
 
 event: saved
 data: {"step": "saved", "message": "故事已保存，事件消费状态已更新", "story_id": "childhood_story_20260605_100030", "story_path": "stories/childhood_story_20260605_100030.md", "life_stage": "childhood", "life_stage_label": "童年时期", "consumed_event_count": 15, "image_path": "stories/childhood_story_20260605_100030_cover.png", "illustration_paths": ["stories/childhood_story_20260605_100030_illust_01.png", "stories/childhood_story_20260605_100030_illust_02.png", "stories/childhood_story_20260605_100030_illust_03.png", "stories/childhood_story_20260605_100030_illust_04.png"], "timestamp": "2026-06-05T10:00:30+08:00"}
@@ -654,11 +654,11 @@ data: {"message": "任务失败"}
 
 - 生成物保存到 `knowledge_base/{user_id}/stories/{life_stage}_story_YYYYMMDD_HHMMSS.md`。
 - 故事正文不在 `completed` 事件中返回；前端可通过文件接口读取。
-- 故事文本生成完成后，会自动调用通义万相（`wan2.7-image`）生成封面配图和 4 张故事插图，分别保存为 `stories/{story_id}_cover.png` 和 `stories/{story_id}_illust_01~04.png`。
-- 封面图和 4 张插图并行生成（`asyncio.gather`），单张失败不影响其他图片。
-- `generating_image` 事件在配图生成开始时发出；若 `IMAGE_API_KEY` 未配置或 LLM 未返回 `image_prompt`，此事件不会出现。
-- 配图生成失败时不影响故事保存，`saved` 事件中 `image_path` 为空字符串 `""`。
-- `saved` 和 `completed` 事件中的 `image_path` 为封面图的相对路径（相对于用户知识库根目录）。
+- 故事文本生成完成后，会自动调用通义千问图片模型（`qwen-image-2.0`）生成封面配图和 4 张故事插图，分别保存为 `stories/{story_id}_cover.png` 和 `stories/{story_id}_illust_01~04.png`。
+- 封面图和 4 张插图并行生成（`asyncio.gather`），单张失败不影响其他图片。遇到 429 限流时自动重试（最多 3 次，指数退避 5s/10s/20s）。
+- `generating_image` 事件在配图生成开始时发出，包含 `illustration_count`（插图数量）；若 `DEEPSEEK_APIKEY` 未配置或 LLM 未返回图片 prompt，此事件不会出现。
+- 配图生成失败时不影响故事保存，`saved` 事件中 `image_path` 为空字符串 `""`，`illustration_paths` 为空列表 `[]`。
+- `saved` 和 `completed` 事件中的 `image_path` 为封面图路径，`illustration_paths` 为插图路径列表（均相对于用户知识库根目录）。
 - 消费状态保存到 `stories/.story_state.json`，第一版仅按 `event_path` 判断是否已消费；事件被改名、移动或重写后会被视为新事件。
 - 故事文件末尾会以注释形式保留来源事件路径，便于排查和溯源。
 - 若故事文件已保存但状态索引保存失败，会返回 `STATE_SAVE_FAILED`，不发送 `completed`。
