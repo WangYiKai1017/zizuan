@@ -1,5 +1,6 @@
 """Story generation runner — wraps StoryGenerationAgent for SSE streaming."""
 
+import logging
 from pathlib import Path
 
 from src.agents.story_generation_agent import (
@@ -9,10 +10,14 @@ from src.agents.story_generation_agent import (
     StoryOutputInvalidError,
     StoryStateSaveError,
 )
+from src.config.image_config import get_image_config
 from src.config.llm_config import get_default_config
 from src.service.agent_runners.base_runner import BaseAgentRunner
+from src.services.image_generation_service import ImageGenerationError, ImageGenerationService
 from src.services.llm_service import LLMService
 from src.services.observability import observability_context, observe_step
+
+logger = logging.getLogger(__name__)
 
 
 class StoryRunner(BaseAgentRunner):
@@ -26,6 +31,45 @@ class StoryRunner(BaseAgentRunner):
         config = get_default_config()
         llm_service = LLMService(config)
         return StoryGenerationAgent(kb_path=kb_path, llm_service=llm_service)
+
+    def _create_image_service(self) -> ImageGenerationService | None:
+        config = get_image_config()
+        if not config.api_key:
+            logger.warning("DEEPSEEK_APIKEY not set, skipping image generation")
+            return None
+        return ImageGenerationService(
+            api_key=config.api_key,
+            base_url=config.base_url,
+            model=config.model_name,
+            size=config.size,
+        )
+
+    async def _generate_cover_image(
+        self,
+        image_service: ImageGenerationService,
+        image_prompt: str,
+        story_id: str,
+        kb_path: str,
+    ) -> str:
+        """Generate and download cover image. Returns relative path or empty string on failure."""
+        if not image_prompt:
+            logger.info("No image_prompt for story %s, skipping image generation", story_id)
+            return ""
+
+        try:
+            with observe_step("story_generation.generate_image", as_type="tool"):
+                result = await image_service.generate(image_prompt)
+                image_filename = f"{story_id}_cover.png"
+                image_abs_path = Path(kb_path) / "stories" / image_filename
+                await image_service.download(result.url, image_abs_path)
+                logger.info("Cover image saved: %s", image_abs_path)
+                return f"stories/{image_filename}"
+        except ImageGenerationError as e:
+            logger.warning("Image generation failed for story %s: %s", story_id, e)
+            return ""
+        except Exception as e:
+            logger.warning("Unexpected error generating image for story %s: %s", story_id, e)
+            return ""
 
     async def run(self) -> None:
         kb_path = self._get_kb_path()
@@ -70,6 +114,7 @@ class StoryRunner(BaseAgentRunner):
                 saved_stories = []
                 failed_stages = []
                 consumed_count = 0
+                image_service = self._create_image_service()
 
                 for life_stage, selected_events in ready_stage_events.items():
                     stage_label = LIFE_STAGE_LABELS.get(life_stage, life_stage)
@@ -120,6 +165,32 @@ class StoryRunner(BaseAgentRunner):
                         await self.emitter.emit("stage_failed", failed_stages[-1])
                         continue
 
+                    # Generate cover image
+                    image_path = ""
+                    if image_service and story.image_prompt:
+                        await self.emitter.emit("generating_image", {
+                            "step": "generating_image",
+                            "message": f"正在为{stage_label}故事生成封面配图...",
+                            "story_id": saved.story_id,
+                            "life_stage": life_stage,
+                            "life_stage_label": stage_label,
+                        })
+                        image_path = await self._generate_cover_image(
+                            image_service,
+                            story.image_prompt,
+                            saved.story_id,
+                            kb_path,
+                        )
+                        # Update state with image_path (failure here should not kill the stage)
+                        if image_path:
+                            try:
+                                agent.update_story_image_path(saved.story_id, image_path)
+                            except Exception as e:
+                                logger.warning(
+                                    "Failed to update image_path in state for story %s: %s",
+                                    saved.story_id, e,
+                                )
+
                     consumed_count += len(saved.event_paths)
                     saved_payload = {
                         "step": "saved",
@@ -129,6 +200,7 @@ class StoryRunner(BaseAgentRunner):
                         "life_stage": saved.life_stage,
                         "life_stage_label": stage_label,
                         "consumed_event_count": len(saved.event_paths),
+                        "image_path": image_path,
                     }
                     saved_stories.append(saved_payload)
                     await self.emitter.emit("saved", saved_payload)

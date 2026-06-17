@@ -581,6 +581,7 @@ data: {"message": "知识库整理完成"}
       "created_at": "2026-06-05T10:00:30+08:00",
       "source_event_count": 15,
       "event_paths": ["events/childhood/出生.md"],
+      "image_path": "stories/childhood_story_20260605_100030_cover.png",
       "size": 4096,
       "last_modified": "2026-06-05T02:00:30+00:00"
     }
@@ -591,6 +592,7 @@ data: {"message": "知识库整理完成"}
 **说明：**
 
 - `content` 返回完整 Markdown 文件内容，包含标题、生成信息、故事正文和来源事件注释。
+- `image_path` 为故事封面配图的相对路径，生成失败或未生成时为空字符串 `""`。图片文件保存在 `knowledge_base/{user_id}/stories/{story_id}_cover.png`。
 - `life_stage` 只能取 `childhood`、`youth`、`middle_age`、`elderly`。
 - 若对应时期还没有故事，返回 `count: 0` 和空数组。
 
@@ -616,13 +618,16 @@ event: scanning
 data: {"step": "scanning", "message": "扫描到 18 个未生成故事的事件", "available_events": 18, "required_events": 15, "timestamp": "2026-06-05T10:00:01+08:00"}
 
 event: generating
-data: {"step": "generating", "message": "正在根据最早的 15 个事件生成故事...", "selected_event_count": 15, "selected_event_paths": ["events/childhood/出生.md"], "timestamp": "2026-06-05T10:00:02+08:00"}
+data: {"step": "generating", "message": "正在根据童年时期最早的 15 个事件生成故事...", "life_stage": "childhood", "life_stage_label": "童年时期", "selected_event_count": 15, "selected_event_paths": ["events/childhood/出生.md"], "timestamp": "2026-06-05T10:00:02+08:00"}
+
+event: generating_image
+data: {"step": "generating_image", "message": "正在为童年时期故事生成封面配图...", "story_id": "childhood_story_20260605_100030", "life_stage": "childhood", "life_stage_label": "童年时期", "timestamp": "2026-06-05T10:00:25+08:00"}
 
 event: saved
-data: {"step": "saved", "message": "故事已保存，事件消费状态已更新", "story_id": "story_20260605_100030", "story_path": "stories/story_20260605_100030.md", "consumed_event_count": 15, "timestamp": "2026-06-05T10:00:30+08:00"}
+data: {"step": "saved", "message": "故事已保存，事件消费状态已更新", "story_id": "childhood_story_20260605_100030", "story_path": "stories/childhood_story_20260605_100030.md", "life_stage": "childhood", "life_stage_label": "童年时期", "consumed_event_count": 15, "image_path": "stories/childhood_story_20260605_100030_cover.png", "timestamp": "2026-06-05T10:00:30+08:00"}
 
 event: completed
-data: {"status": "completed", "story_id": "story_20260605_100030", "story_path": "stories/story_20260605_100030.md", "consumed_event_count": 15, "remaining_event_count": 3, "timestamp": "2026-06-05T10:00:31+08:00"}
+data: {"status": "completed", "story_id": "childhood_story_20260605_100030", "story_path": "stories/childhood_story_20260605_100030.md", "life_stage": "childhood", "life_stage_label": "童年时期", "stories": [...], "failed_stages": [], "generated_story_count": 1, "consumed_event_count": 15, "remaining_event_count": 3, "timestamp": "2026-06-05T10:00:31+08:00"}
 
 event: done
 data: {"message": "故事生成完成"}
@@ -640,8 +645,12 @@ data: {"message": "任务失败"}
 
 **说明：**
 
-- 生成物保存到 `knowledge_base/{user_id}/stories/story_YYYYMMDD_HHMMSS.md`。
+- 生成物保存到 `knowledge_base/{user_id}/stories/{life_stage}_story_YYYYMMDD_HHMMSS.md`。
 - 故事正文不在 `completed` 事件中返回；前端可通过文件接口读取。
+- 故事文本生成完成后，会自动调用通义万相（`wan2.7-image`）生成封面配图，保存为 `stories/{story_id}_cover.png`。
+- `generating_image` 事件在配图生成开始时发出；若 `IMAGE_API_KEY` 未配置或 LLM 未返回 `image_prompt`，此事件不会出现。
+- 配图生成失败时不影响故事保存，`saved` 事件中 `image_path` 为空字符串 `""`。
+- `saved` 和 `completed` 事件中的 `image_path` 为封面图的相对路径（相对于用户知识库根目录）。
 - 消费状态保存到 `stories/.story_state.json`，第一版仅按 `event_path` 判断是否已消费；事件被改名、移动或重写后会被视为新事件。
 - 故事文件末尾会以注释形式保留来源事件路径，便于排查和溯源。
 - 若故事文件已保存但状态索引保存失败，会返回 `STATE_SAVE_FAILED`，不发送 `completed`。

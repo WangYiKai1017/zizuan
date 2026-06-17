@@ -50,6 +50,7 @@ class GeneratedStory:
 
     title: str
     body: str
+    image_prompt: str = ""
 
 
 @dataclass(frozen=True)
@@ -60,6 +61,7 @@ class SavedStory:
     story_path: str
     life_stage: str
     event_paths: list[str]
+    image_path: str = ""
 
 
 class StoryGenerationError(Exception):
@@ -192,6 +194,7 @@ class StoryGenerationAgent:
         story: GeneratedStory,
         events: list[StoryEvent],
         life_stage: str = "",
+        image_path: str = "",
     ) -> SavedStory:
         """Save story markdown first, then persist consumed event paths."""
         self.stories_dir.mkdir(parents=True, exist_ok=True)
@@ -218,6 +221,8 @@ class StoryGenerationAgent:
                 life_stage=life_stage,
                 event_paths=event_paths,
                 created_at=now.isoformat(),
+                image_path=image_path,
+                image_prompt=story.image_prompt,
             )
         except Exception as e:
             raise StoryStateSaveError(
@@ -230,6 +235,7 @@ class StoryGenerationAgent:
             story_path=story_rel_path,
             life_stage=life_stage,
             event_paths=event_paths,
+            image_path=image_path,
         )
 
     def _load_state(self) -> dict[str, Any]:
@@ -255,6 +261,16 @@ class StoryGenerationAgent:
         tmp_path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
         tmp_path.replace(self.state_path)
 
+    def update_story_image_path(self, story_id: str, image_path: str) -> None:
+        """Update the image_path for an existing story in state."""
+        state = self._load_state()
+        stories = state.get("stories", [])
+        for story in stories:
+            if isinstance(story, dict) and story.get("story_id") == story_id:
+                story["image_path"] = image_path
+                break
+        self._save_state(state)
+
     def _mark_events_consumed(
         self,
         story_id: str,
@@ -262,6 +278,8 @@ class StoryGenerationAgent:
         life_stage: str,
         event_paths: list[str],
         created_at: str,
+        image_path: str = "",
+        image_prompt: str = "",
     ) -> None:
         state = self._load_state()
         existing = list(dict.fromkeys(state.get("generated_event_paths", [])))
@@ -276,6 +294,8 @@ class StoryGenerationAgent:
             "life_stage": life_stage,
             "event_paths": event_paths,
             "created_at": created_at,
+            "image_path": image_path,
+            "image_prompt": image_prompt,
         })
 
         self._save_state({
@@ -305,7 +325,8 @@ class StoryGenerationAgent:
 JSON 格式：
 {{
   "title": "故事标题",
-  "body": "故事正文"
+  "body": "故事正文",
+  "image_prompt": "English description for a cover illustration. Pencil sketch style, realistic shading, vintage newspaper illustration feel, warm nostalgic tone, soft textures. Describe the core scene or imagery of the story in under 100 words."
 }}
 """
 
@@ -349,11 +370,12 @@ JSON 格式：
 
         title = str(data.get("title") or "").strip()
         body = str(data.get("body") or "").strip()
+        image_prompt = str(data.get("image_prompt") or "").strip()
         if not title:
             raise StoryOutputInvalidError("故事标题为空")
         if len(body) < 50:
             raise StoryOutputInvalidError("故事正文过短或为空")
-        return GeneratedStory(title=title, body=body)
+        return GeneratedStory(title=title, body=body, image_prompt=image_prompt)
 
     def _build_story_markdown(
         self,

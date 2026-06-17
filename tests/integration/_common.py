@@ -24,7 +24,7 @@ BASE_URL: str = os.getenv("SERVICE_URL", "http://localhost:8000").rstrip("/")
 
 # Default timeouts (seconds)
 DEFAULT_TIMEOUT: float = 60.0
-SSE_READ_TIMEOUT: float = 300.0  # agent execution can be slow
+SSE_READ_TIMEOUT: float = 600.0  # agent execution + image generation can be slow
 
 
 def section(title: str) -> None:

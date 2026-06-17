@@ -306,6 +306,111 @@ def verify_guided_state(user_kb: Path) -> list[str]:
     return failures
 
 
+def inject_fake_events(user_kb: Path, life_stage: str, count: int) -> list[Path]:
+    """Inject count fake event files into events/{life_stage}/ for story generation testing."""
+    events_dir = user_kb / "events" / life_stage
+    events_dir.mkdir(parents=True, exist_ok=True)
+
+    templates = [
+        ("小时候在弄堂里玩弹珠", "1963年夏天", "childhood", "other"),
+        ("第一次吃冰棍", "1964年", "childhood", "other"),
+        ("父亲教我骑自行车", "1965年春", "childhood", "family"),
+        ("和邻居小明打架", "1965年秋", "childhood", "other"),
+        ("母亲做的红烧肉", "1966年", "childhood", "family"),
+        ("小学毕业典礼", "1966年夏", "childhood", "achievement"),
+        ("偷看连环画被抓", "1964年", "childhood", "other"),
+        ("第一次坐火车去外婆家", "1965年暑假", "childhood", "other"),
+        ("学写毛笔字", "1963年", "childhood", "other"),
+        ("下雪天打雪仗", "1964年冬", "childhood", "other"),
+        ("家里买了第一台收音机", "1966年", "childhood", "family"),
+        ("跟着爷爷去钓鱼", "1965年", "childhood", "family"),
+        ("参加学校合唱团", "1964年", "childhood", "achievement"),
+        ("帮妈妈卖菜", "1966年", "childhood", "family"),
+        ("第一次考一百分", "1963年秋", "childhood", "achievement"),
+        ("院子里种了一棵桃树", "1964年春", "childhood", "other"),
+        ("和姐姐一起放风筝", "1965年春", "childhood", "family"),
+        ("邻居家着火了", "1966年冬", "childhood", "other"),
+        ("学会游泳", "1965年夏", "childhood", "achievement"),
+        ("第一次看电影", "1964年", "childhood", "other"),
+    ]
+
+    created = []
+    for i in range(count):
+        title, time_str, stage, event_type = templates[i % len(templates)]
+        # Add index to avoid duplicate filenames
+        filename = f"{i:02d}_{title}.md"
+        filepath = events_dir / filename
+        content = (
+            f"# {title}\n\n"
+            f"## 基本信息\n"
+            f"- **时间**：{time_str}\n"
+            f"- **地点**：上海弄堂\n"
+            f"- **事件类型**：{event_type}\n\n"
+            f"## 事件描述\n"
+            f"这是关于「{title}」的一段童年回忆，发生在{time_str}。那时候生活虽然简单，但每一天都充满新鲜感。\n"
+        )
+        filepath.write_text(content, encoding="utf-8")
+        created.append(filepath)
+
+    return created
+
+
+def verify_story_generation(user_kb: Path) -> list[str]:
+    """Verify story generation output: story file, image, and state."""
+    failures: list[str] = []
+
+    # Check .story_state.json
+    state_file = user_kb / "stories" / ".story_state.json"
+    if not state_file.exists():
+        failures.append("story_gen: .story_state.json not found")
+        return failures
+
+    try:
+        state = json.loads(state_file.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as e:
+        failures.append(f"story_gen: failed to read .story_state.json: {e}")
+        return failures
+
+    info(f"story_state = {json.dumps(state, ensure_ascii=False)[:500]}")
+
+    stories = state.get("stories", [])
+    if not stories:
+        failures.append("story_gen: no stories recorded in .story_state.json")
+        return failures
+
+    story_entry = stories[0]
+    story_id = story_entry.get("story_id", "")
+    image_path = story_entry.get("image_path", "")
+    image_prompt = story_entry.get("image_prompt", "")
+
+    info(f"story_id = {story_id}")
+    info(f"image_path = {image_path!r}")
+    info(f"image_prompt = {image_prompt[:80]!r}..." if image_prompt else "image_prompt = (empty)")
+
+    # Verify story .md file exists
+    story_file = user_kb / story_entry.get("file_path", "")
+    if not story_file.exists():
+        failures.append(f"story_gen: story file not found at {story_entry.get('file_path')}")
+    else:
+        info(f"story file exists: {story_file}")
+
+    # Verify image file exists (if image_path is non-empty)
+    if image_path:
+        image_file = user_kb / image_path
+        if not image_file.exists():
+            failures.append(f"story_gen: cover image not found at {image_path}")
+        else:
+            size = image_file.stat().st_size
+            info(f"cover image exists: {image_file} ({size} bytes)")
+            if size < 100:
+                failures.append(f"story_gen: cover image too small ({size} bytes), likely corrupt")
+    else:
+        # image_path empty is acceptable (API key might not be configured in test env)
+        info("story_gen: image_path is empty (image generation may have been skipped)")
+
+    return failures
+
+
 def verify_event_classification(user_kb: Path) -> list[str]:
     failures: list[str] = []
     expectations = {
@@ -491,6 +596,66 @@ def main(argv: list[str] | None = None) -> int:
             failures.append(
                 f"status after end: expected 404, got {ended_status_response.status_code}"
             )
+
+        section("Inject Events for Story Generation")
+        injected = inject_fake_events(user_kb, "childhood", count=16)
+        info(f"Injected {len(injected)} fake events into events/childhood/")
+
+        section("Generate Story")
+        story_events, _ = consume_sse(
+            "POST",
+            f"{base_url}/api/stories/generate",
+            json_body={"user_id": user_id},
+        )
+        if not story_events:
+            failures.append("story_gen: no SSE events received from /stories/generate")
+
+        generating_image_events = [e for e in story_events if e[0] == "generating_image"]
+        saved_events = [e for e in story_events if e[0] == "saved"]
+        completed_events = [e for e in story_events if e[0] == "completed"]
+        failed_events = [e for e in story_events if e[0] == "failed"]
+
+        info(f"generating_image events: {len(generating_image_events)}")
+        info(f"saved events: {len(saved_events)}")
+        info(f"completed events: {len(completed_events)}")
+        info(f"failed events: {len(failed_events)}")
+
+        if not saved_events and not completed_events:
+            failures.append(
+                "story_gen: no 'saved' or 'completed' events — "
+                f"failed events: {[e[1] for e in failed_events]}"
+            )
+
+        if saved_events:
+            saved_data = saved_events[0][1]
+            image_path_val = saved_data.get("image_path")
+            info(f"saved event image_path = {image_path_val!r}")
+            if image_path_val is None:
+                failures.append("story_gen: 'saved' event missing image_path field")
+
+        section("Verify Story Generation")
+        failures.extend(verify_story_generation(user_kb))
+
+        section("Verify Story List API")
+        list_response = requests.get(
+            f"{base_url}/api/stories/{user_id}?life_stage=childhood",
+            timeout=DEFAULT_TIMEOUT,
+        )
+        info(f"GET /api/stories/{user_id}?life_stage=childhood -> HTTP {list_response.status_code}")
+        if list_response.status_code != 200:
+            failures.append(f"story_list: expected 200, got {list_response.status_code}")
+        else:
+            list_body = list_response.json()
+            info(f"story_list body = {json.dumps(list_body, ensure_ascii=False)[:500]}")
+            stories_list = list_body.get("stories", [])
+            if not stories_list:
+                failures.append("story_list: no stories returned")
+            else:
+                first_story = stories_list[0]
+                if "image_path" not in first_story:
+                    failures.append("story_list: story missing image_path field")
+                else:
+                    info(f"story_list image_path = {first_story['image_path']!r}")
 
         section("Verify Event Stage Files")
         failures.extend(verify_event_classification(user_kb))
