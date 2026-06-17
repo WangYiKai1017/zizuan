@@ -16,7 +16,7 @@ from src.config.llm_config import get_default_config
 from src.service.agent_runners.base_runner import BaseAgentRunner
 from src.services.image_generation_service import ImageGenerationError, ImageGenerationService
 from src.services.llm_service import LLMService
-from src.services.observability import observability_context, observe_step
+from src.services.observability import get_observability_context, observability_context, observe_step
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +55,13 @@ class StoryRunner(BaseAgentRunner):
         """Generate and download one image. Returns relative path or empty string on failure."""
         if not prompt:
             return ""
+        ctx = get_observability_context()
+        logger.info(
+            "_generate_image(%s): context=%s, trace_id=%s",
+            filename,
+            "active" if ctx else "NONE",
+            ctx.trace_id if ctx else "N/A",
+        )
         try:
             with observe_step(
                 "story_generation.generate_image",

@@ -312,6 +312,10 @@ def observe_step(
 
     context = get_observability_context()
     if context is None:
+        import logging as _logging
+        _logging.getLogger(__name__).warning(
+            "observe_step(%s): no active observability context — observation skipped", node
+        )
         yield None
         return
 

@@ -1,4 +1,8 @@
-"""Image generation service using DashScope API."""
+"""Image generation service using DashScope API.
+
+Supports both synchronous models (qwen-image-2.0) and asynchronous
+models (wan2.7-image) via automatic endpoint detection.
+"""
 
 from __future__ import annotations
 
@@ -12,10 +16,14 @@ import httpx
 logger = logging.getLogger(__name__)
 
 # DashScope API endpoints
-_SUBMIT_URL = "/api/v1/services/aigc/image-generation/generation"
+_SYNC_ENDPOINT = "/api/v1/services/aigc/multimodal-generation/generation"
+_ASYNC_ENDPOINT = "/api/v1/services/aigc/image-generation/generation"
 _TASK_URL = "/api/v1/tasks/{task_id}"
 
-# Polling configuration
+# Models that use the synchronous endpoint
+_SYNC_MODELS = {"qwen-image-2.0"}
+
+# Polling configuration (async models only)
 _POLL_INTERVAL_SECONDS = 3.0
 _POLL_MAX_ATTEMPTS = 120  # 6 minutes max wait
 
@@ -41,13 +49,18 @@ class ImageGenerationError(Exception):
 
 
 class ImageGenerationService:
-    """Async image generation via DashScope text-to-image API."""
+    """Image generation via DashScope text-to-image API.
+
+    Automatically selects the correct endpoint based on model name:
+    - qwen-image-2.0: synchronous multimodal-generation endpoint
+    - wan2.7-image: asynchronous image-generation endpoint with polling
+    """
 
     def __init__(
         self,
         api_key: str,
         base_url: str = "https://dashscope.aliyuncs.com",
-        model: str = "wan2.7-image",
+        model: str = "qwen-image-2.0",
         size: str = "1024*1024",
         timeout: float = 180.0,
     ):
@@ -56,9 +69,10 @@ class ImageGenerationService:
         self.model = model
         self.size = size
         self.timeout = timeout
+        self._is_sync = model in _SYNC_MODELS
 
     async def generate(self, prompt: str) -> ImageResult:
-        """Submit image generation task and wait for completion.
+        """Generate an image from a text prompt.
 
         Retries on rate limiting (429) or server errors (5xx) with exponential backoff.
 
@@ -69,31 +83,23 @@ class ImageGenerationService:
             ImageResult with the generated image URL.
 
         Raises:
-            ImageGenerationError: If submission or generation fails after all retries.
+            ImageGenerationError: If generation fails after all retries.
         """
         last_error: Exception | None = None
 
         for attempt in range(_GENERATE_MAX_RETRIES):
             try:
-                async with httpx.AsyncClient(timeout=self.timeout) as client:
-                    task_id = await self._submit_task(client, prompt)
-                    logger.info("Image generation task submitted: %s", task_id)
-                    image_url = await self._poll_task(client, task_id)
-                return ImageResult(url=image_url, task_id=task_id)
+                if self._is_sync:
+                    return await self._generate_sync(prompt)
+                else:
+                    return await self._generate_async(prompt)
             except ImageGenerationError as e:
                 last_error = e
-                # Retry on rate limiting or server-side errors
                 error_msg = str(e)
-                is_retryable = (
-                    "429" in error_msg
-                    or "500" in error_msg
-                    or "502" in error_msg
-                    or "503" in error_msg
-                    or "rate" in error_msg.lower()
-                    or "concurrent" in error_msg.lower()
-                    or "throttl" in error_msg.lower()
-                    or "busy" in error_msg.lower()
-                    or "timed out" in error_msg.lower()
+                is_retryable = any(
+                    token in error_msg.lower()
+                    for token in ("429", "500", "502", "503", "rate", "concurrent",
+                                  "throttl", "busy", "timed out", "too many")
                 )
                 if not is_retryable or attempt >= _GENERATE_MAX_RETRIES - 1:
                     raise
@@ -109,34 +115,60 @@ class ImageGenerationService:
         )
 
     async def download(self, url: str, save_path: Path) -> Path:
-        """Download image from URL and save to local path.
-
-        Args:
-            url: Image URL to download.
-            save_path: Local file path to save the image.
-
-        Returns:
-            The save_path on success.
-
-        Raises:
-            ImageGenerationError: If download fails.
-        """
+        """Download image from URL and save to local path."""
         save_path.parent.mkdir(parents=True, exist_ok=True)
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
                 response = await client.get(url)
                 response.raise_for_status()
                 content = response.content
-            # Write to disk in a thread to avoid blocking the event loop
             await asyncio.to_thread(save_path.write_bytes, content)
             logger.info("Image saved to %s (%d bytes)", save_path, len(content))
             return save_path
         except httpx.HTTPError as e:
             raise ImageGenerationError(f"Failed to download image: {e}") from e
 
+    async def _generate_sync(self, prompt: str) -> ImageResult:
+        """Synchronous generation for qwen-image-2.0 — single request, direct response."""
+        url = f"{self.base_url}{_SYNC_ENDPOINT}"
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "model": self.model,
+            "input": {
+                "messages": [
+                    {"role": "user", "content": [{"text": prompt}]},
+                ],
+            },
+            "parameters": {"size": self.size, "n": 1},
+        }
+
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                response = await client.post(url, json=payload, headers=headers)
+                response.raise_for_status()
+                data = response.json()
+        except httpx.HTTPError as e:
+            raise ImageGenerationError(f"Sync image generation failed: {e}") from e
+
+        image_url = self._extract_image_url(data, task_id="")
+        request_id = data.get("request_id", "")
+        logger.info("Sync image generated: request_id=%s", request_id)
+        return ImageResult(url=image_url, task_id=request_id)
+
+    async def _generate_async(self, prompt: str) -> ImageResult:
+        """Async generation for wan2.7-image — submit task then poll."""
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            task_id = await self._submit_task(client, prompt)
+            logger.info("Async image task submitted: %s", task_id)
+            image_url = await self._poll_task(client, task_id)
+        return ImageResult(url=image_url, task_id=task_id)
+
     async def _submit_task(self, client: httpx.AsyncClient, prompt: str) -> str:
         """Submit async image generation task, return task_id."""
-        url = f"{self.base_url}{_SUBMIT_URL}"
+        url = f"{self.base_url}{_ASYNC_ENDPOINT}"
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
@@ -146,16 +178,10 @@ class ImageGenerationService:
             "model": self.model,
             "input": {
                 "messages": [
-                    {
-                        "role": "user",
-                        "content": [{"text": prompt}],
-                    }
+                    {"role": "user", "content": [{"text": prompt}]},
                 ],
             },
-            "parameters": {
-                "size": self.size,
-                "n": 1,
-            },
+            "parameters": {"size": self.size, "n": 1},
         }
 
         try:
@@ -177,12 +203,11 @@ class ImageGenerationService:
         transient_failures = 0
 
         for attempt in range(_POLL_MAX_ATTEMPTS):
-            # Check status first, then sleep before next attempt
             try:
                 response = await client.get(url, headers=headers)
                 response.raise_for_status()
                 data = response.json()
-                transient_failures = 0  # Reset on successful request
+                transient_failures = 0
             except httpx.HTTPError as e:
                 transient_failures += 1
                 if transient_failures >= _TRANSIENT_MAX_RETRIES:
@@ -200,17 +225,7 @@ class ImageGenerationService:
             status = output.get("task_status")
 
             if status == "SUCCEEDED":
-                choices = output.get("choices", [])
-                if not choices:
-                    raise ImageGenerationError(f"Task {task_id} succeeded but no choices")
-                message = choices[0].get("message", {})
-                content = message.get("content", [])
-                if not content:
-                    raise ImageGenerationError(f"Task {task_id} result has no content")
-                image_url = content[0].get("image")
-                if not image_url:
-                    raise ImageGenerationError(f"Task {task_id} result has no image URL: {content[0]}")
-                return image_url
+                return self._extract_image_url(data, task_id)
 
             if status == "FAILED":
                 error_msg = output.get("message", "Unknown error")
@@ -219,8 +234,27 @@ class ImageGenerationService:
             if status in ("CANCELED", "UNKNOWN"):
                 raise ImageGenerationError(f"Task {task_id} terminated with status: {status}")
 
-            # PENDING or RUNNING - sleep before next check
             logger.debug("Task %s status: %s (attempt %d)", task_id, status, attempt + 1)
             await asyncio.sleep(_POLL_INTERVAL_SECONDS)
 
         raise ImageGenerationError(f"Task {task_id} timed out after {_POLL_MAX_ATTEMPTS} attempts")
+
+    @staticmethod
+    def _extract_image_url(data: dict, task_id: str) -> str:
+        """Extract image URL from DashScope response (works for both sync and async)."""
+        output = data.get("output", {})
+        choices = output.get("choices", [])
+        if not choices:
+            raise ImageGenerationError(
+                f"Task {task_id}: no choices in response" if task_id else "No choices in response"
+            )
+        message = choices[0].get("message", {})
+        content = message.get("content", [])
+        if not content:
+            raise ImageGenerationError(f"Task {task_id}: no content" if task_id else "No content")
+        image_url = content[0].get("image")
+        if not image_url:
+            raise ImageGenerationError(
+                f"Task {task_id}: no image URL: {content[0]}" if task_id else f"No image URL: {content[0]}"
+            )
+        return image_url
