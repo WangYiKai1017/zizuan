@@ -35,6 +35,7 @@ class ProfileCollectionAgent:
     REQUIRED_FIELDS = [
         "name",
         "age",
+        "gender",
         "occupation",
         "family_status",
         "living_arrangement",
@@ -458,7 +459,7 @@ class ProfileCollectionAgent:
 
         missing_required = self._missing_required_fields()
         optional_fields = [
-            "gender", "birth_year", "birth_place", "children_count",
+            "birth_year", "birth_place", "children_count",
             "health_status", "important_person", "favorite_memory",
         ]
         current_state = "READY" if not missing_required else "COLLECT_BASIC"
