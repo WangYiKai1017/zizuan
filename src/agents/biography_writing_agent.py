@@ -5,6 +5,7 @@
 全部完成后合并为完整传记。
 """
 
+import json
 import logging
 import re
 from datetime import datetime
@@ -156,16 +157,27 @@ class BiographyWritingAgent:
         chapter = state.current_chapter
         logger.info(f"=== [write_chapter] 撰写章节: {chapter.chapter_title} ===")
 
-        with observe_step(
-            "write_chapter.build_grounded_draft",
-            metadata={"chapter_id": chapter.chapter_id, "chapter_title": chapter.chapter_title},
-        ):
-            draft = self._build_grounded_chapter_content(
-                title=chapter.chapter_title,
-                theme=chapter.theme,
-                source_content=state.source_content,
-                character_profiles=state.character_profiles,
-            )
+        result = await self.llm_service.invoke_with_template(
+            template_name="biography_chapter_writer",
+            variables={
+                "chapter_title": chapter.chapter_title,
+                "chapter_theme": chapter.theme,
+                "life_stage": chapter.life_stage,
+                "source_materials": state.source_content,
+                "character_profiles": state.character_profiles,
+                "timeline_context": state.timeline_context,
+            },
+            trace_node="writing.write_chapter",
+        )
+
+        if not result.success:
+            logger.error(f"[write_chapter] LLM 调用失败: {result.error}")
+            return {
+                "status": AgentStatus.FAILED,
+                "error_message": f"章节写作失败: {result.error}",
+            }
+
+        draft = result.content.strip()
         logger.info(f"[write_chapter] 初稿生成完成，{len(draft)} 字符")
 
         return {"draft_content": draft}
@@ -182,7 +194,51 @@ class BiographyWritingAgent:
         chapter = state.current_chapter
         logger.info(f"=== [review_and_save] 审阅章节: {chapter.chapter_title} ===")
 
-        final_content = state.draft_content
+        # Call reviewer
+        review_result = await self.llm_service.invoke_with_template(
+            template_name="biography_chapter_reviewer",
+            variables={
+                "chapter_content": state.draft_content,
+                "source_materials": state.source_content,
+                "chapter_title": chapter.chapter_title,
+            },
+            trace_node="writing.review_chapter",
+        )
+
+        final_content = state.draft_content  # Default to draft
+
+        if review_result.success:
+            try:
+                content = review_result.content.strip()
+                if "```json" in content:
+                    content = content.split("```json")[1].split("```")[0].strip()
+                elif "```" in content:
+                    content = content.split("```")[1].split("```")[0].strip()
+
+                review_data = json.loads(content)
+                score = review_data.get("score", 7)
+                issues = review_data.get("issues", [])
+                needs_revision = review_data.get("needs_revision", False)
+
+                logger.info(f"[review_and_save] 审阅评分: {score}/10")
+                if issues:
+                    for issue in issues:
+                        logger.info(
+                            f"[review_and_save] 问题: [{issue.get('type')}] {issue.get('description')}"
+                        )
+
+                if needs_revision and review_data.get("revised_content"):
+                    final_content = review_data["revised_content"]
+                    logger.info("[review_and_save] 使用修订版本")
+                else:
+                    logger.info("[review_and_save] 初稿通过审阅，无需修订")
+
+            except (json.JSONDecodeError, Exception) as e:
+                logger.warning(f"[review_and_save] 审阅结果解析失败: {e}，使用初稿")
+        else:
+            logger.warning(
+                f"[review_and_save] 审阅 LLM 调用失败: {review_result.error}，使用初稿"
+            )
 
         # Save chapter file
         with observe_step(
