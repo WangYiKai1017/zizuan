@@ -48,7 +48,7 @@ from _common import (  # noqa: E402
 
 KB_ROOT = PROJECT_ROOT / "knowledge_base"
 LOG_DIR = PROJECT_ROOT / "logs"
-SOURCE_USER_ID = "user_1780406830166"
+FIXTURE_KB_DIR = THIS_DIR / "fixtures" / "biography_kb"
 
 
 # ---------------------------------------------------------------------------
@@ -62,8 +62,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=0,
                         help="0 = auto-pick a free port")
-    parser.add_argument("--source-user-id", default=SOURCE_USER_ID,
-                        help="Existing user whose KB events/people to copy.")
     parser.add_argument("--cleanup-kb", action="store_true",
                         help="Delete the generated test KB after the run.")
     parser.add_argument("--startup-timeout", type=float, default=90.0)
@@ -82,15 +80,14 @@ def pick_free_port(host: str) -> int:
 # KB setup
 # ---------------------------------------------------------------------------
 
-def create_test_kb(source_user_id: str, test_user_id: str) -> Path:
-    """Copy events/people/timeline from source user to a fresh test user KB.
+def create_test_kb(test_user_id: str) -> Path:
+    """Copy fixture KB data to a fresh test user directory.
 
     The biography/ directory is intentionally NOT copied so the test starts
     from scratch and exercises the full outline → write pipeline.
     """
-    source_kb = KB_ROOT / source_user_id
-    if not source_kb.exists():
-        raise RuntimeError(f"Source KB not found: {source_kb}")
+    if not FIXTURE_KB_DIR.exists():
+        raise RuntimeError(f"Fixture KB not found: {FIXTURE_KB_DIR}")
 
     test_kb = KB_ROOT / test_user_id
     if test_kb.exists():
@@ -99,20 +96,20 @@ def create_test_kb(source_user_id: str, test_user_id: str) -> Path:
 
     # Copy the directories the outline agent scans.
     for subdir in ("events", "people", "timeline", "themes", "sessions"):
-        src = source_kb / subdir
+        src = FIXTURE_KB_DIR / subdir
         if src.exists():
             shutil.copytree(src, test_kb / subdir)
 
     # Copy metadata files needed for outline generation.
     for filename in ("user.md", "index.md", "summary_index.md"):
-        src = source_kb / filename
+        src = FIXTURE_KB_DIR / filename
         if src.exists():
             shutil.copy2(src, test_kb / filename)
 
     # Ensure biography/ exists but is empty (the agent will create outline.yaml).
     (test_kb / "biography" / "chapters").mkdir(parents=True, exist_ok=True)
 
-    info(f"Copied KB from {source_user_id!r} → {test_kb}")
+    info(f"Created test KB from fixture → {test_kb}")
     return test_kb
 
 
@@ -216,7 +213,6 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     port = args.port or pick_free_port(args.host)
     base_url = f"http://{args.host}:{port}"
-    source_user_id = args.source_user_id
     test_user_id = f"e2e_biography_{int(time.time())}"
 
     proc: subprocess.Popen[Any] | None = None
@@ -226,12 +222,12 @@ def main(argv: list[str] | None = None) -> int:
     section("Setup")
     info(f"PROJECT_ROOT    = {PROJECT_ROOT}")
     info(f"BASE_URL        = {base_url}")
-    info(f"SOURCE_USER_ID  = {source_user_id}")
+    info(f"FIXTURE_KB_DIR  = {FIXTURE_KB_DIR}")
     info(f"TEST_USER_ID    = {test_user_id}")
 
     try:
         # ---- Setup -------------------------------------------------------
-        test_kb = create_test_kb(source_user_id, test_user_id)
+        test_kb = create_test_kb(test_user_id)
         proc, log_path = start_service(args.host, port)
         info(f"Service log: {log_path}")
         if not wait_for_health(base_url, proc, args.startup_timeout):
