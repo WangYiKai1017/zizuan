@@ -120,7 +120,7 @@ async def get_outline(user_id: str):
 
 @router.put("/{user_id}/chapters/{chapter_id}/confirm")
 async def confirm_chapter(user_id: str, chapter_id: str, request: ChapterConfirmRequest = None):
-    """Confirm a draft chapter for writing."""
+    """Confirm a draft or outdated chapter for writing."""
     _validate_user_kb(user_id)
 
     from src.services.biography_file_manager import BiographyFileManager
@@ -147,12 +147,16 @@ async def confirm_chapter(user_id: str, chapter_id: str, request: ChapterConfirm
             "error": {"code": "FILE_NOT_FOUND", "message": f"章节 {chapter_id} 不存在", "details": None}
         })
 
-    # Validate status transition
-    if target_chapter.status != ChapterStatus.DRAFT:
+    # Validate status transition — allow DRAFT and OUTDATED chapters to be confirmed
+    allowed_statuses = {ChapterStatus.DRAFT, ChapterStatus.OUTDATED}
+    if target_chapter.status not in allowed_statuses:
         raise HTTPException(status_code=400, detail={
             "error": {
                 "code": "INVALID_STATUS_TRANSITION",
-                "message": f"章节 {chapter_id} 当前状态为 {target_chapter.status.value}，无法确认",
+                "message": (
+                    f"章节 {chapter_id} 当前状态为 {target_chapter.status.value}，"
+                    f"只有 draft 或 outdated 的章节可以确认"
+                ),
                 "details": None
             }
         })
