@@ -218,6 +218,8 @@ def main(argv: list[str] | None = None) -> int:
     proc: subprocess.Popen[Any] | None = None
     test_kb: Path | None = None
     failures: list[str] = []
+    first_run_word_count = 0
+    first_run_chapter_ids: set = set()
 
     section("Setup")
     info(f"PROJECT_ROOT    = {PROJECT_ROOT}")
@@ -266,6 +268,10 @@ def main(argv: list[str] | None = None) -> int:
 
                 if not chapters:
                     failures.append("get outline: chapters list is empty")
+
+                first_run_chapter_ids = {
+                    ch.get("id") for ch in chapters if isinstance(ch, dict)
+                }
 
                 # Verify each chapter has required fields
                 for ch in chapters[:3]:  # spot-check first 3
@@ -383,6 +389,7 @@ def main(argv: list[str] | None = None) -> int:
                 info(f"full title         = {title!r}")
                 info(f"full chapters_count = {chapters_count}")
                 info(f"full word_count    = {total_wc}")
+                first_run_word_count = total_wc
                 info(f"content preview    = {content[:200]!r}...")
 
                 if not content.strip():
@@ -391,6 +398,192 @@ def main(argv: list[str] | None = None) -> int:
                     failures.append("get full: total_word_count is 0")
         except requests.RequestException as exc:
             failures.append(f"get full: network error: {exc}")
+
+        # ---- Incremental Update Tests ------------------------------------
+
+        # Step 7: Add new events to middle_age
+        section("Step 7: Add new events to middle_age (simulate user activity)")
+        new_events = {
+            "结婚并在北京安家.md": (
+                "# 结婚并在北京安家\n\n"
+                "- **时间**: 2015年\n"
+                "- **地点**: 北京\n\n"
+                "## 事件描述\n\n"
+                "2015年在北京结婚，和妻子一起在这座城市安家。当时工作压力很大，"
+                "但妻子的支持让我能够全身心投入事业。我们在北京租了一间小公寓，"
+                "虽然不大，但那是我们第一个属于自己的家。\n\n"
+                "## 关键细节\n\n"
+                "- 婚礼在北京举办，规模不大，只请了最亲近的家人和朋友\n"
+                "- 婚后住在朝阳区的一间两居室，月租不便宜\n"
+                "- 妻子在生活上照顾我很多，让我能专注于工作\n"
+            ),
+            "女儿出生.md": (
+                "# 女儿出生\n\n"
+                "- **时间**: 2017年\n"
+                "- **地点**: 北京\n\n"
+                "## 事件描述\n\n"
+                "2017年女儿出生，是我人生中最幸福的时刻之一。第一次抱起她的时候，"
+                "感觉自己整个人都被融化了。从那以后，工作再忙也会抽时间陪她，"
+                "不想错过她成长的每一个瞬间。\n\n"
+                "## 关键细节\n\n"
+                "- 女儿在北京出生，妻子顺产，过程很顺利\n"
+                "- 给她取名字的时候花了很多心思\n"
+                "- 第一次叫爸爸的时候，我激动得差点哭出来\n"
+            ),
+            "离开咨询行业创办AI公司.md": (
+                "# 离开咨询行业创办AI公司\n\n"
+                "- **时间**: 2020年\n"
+                "- **地点**: 北京\n\n"
+                "## 事件描述\n\n"
+                "2020年做了一个重大决定：离开做了多年的咨询行业，创办一家AI公司。"
+                "当时AI技术发展很快，我觉得这是一个难得的机会。很多人不理解我的选择，"
+                "觉得咨询行业已经很稳定了，但我知道如果不抓住这个机会，以后一定会后悔。"
+                "创业的过程非常艰辛，但也让我学到了很多。\n\n"
+                "## 关键细节\n\n"
+                "- 辞职的时候，同事和老板都很惊讶\n"
+                "- 创业初期只有3个人，在一间很小的办公室\n"
+                "- 第一年几乎没有收入，靠积蓄和妻子的工资支撑\n"
+                "- 最困难的时候想过放弃，但还是坚持下来了\n"
+            ),
+            "决定带家人移居上海.md": (
+                "# 决定带家人移居上海\n\n"
+                "- **时间**: 2022年\n"
+                "- **地点**: 上海\n\n"
+                "## 事件描述\n\n"
+                "2022年决定带全家搬到上海。主要原因是女儿要上小学了，"
+                "上海的教育资源更好一些，而且妻子的家人也在上海，可以互相照应。"
+                "离开北京有些不舍，毕竟在那里生活了快十年，但为了家庭整体考虑，"
+                "这是一个正确的决定。\n\n"
+                "## 关键细节\n\n"
+                "- 搬家前在北京生活了近十年\n"
+                "- 选择上海主要为了女儿的教育和家人的支持\n"
+                "- 妻子对这个决定非常支持\n"
+                "- 到上海后重新适应了新的生活环境\n"
+            ),
+        }
+        if test_kb is not None:
+            middle_age_dir = test_kb / "events" / "middle_age"
+            middle_age_dir.mkdir(parents=True, exist_ok=True)
+            for filename, content in new_events.items():
+                (middle_age_dir / filename).write_text(content, encoding="utf-8")
+            info(f"Added {len(new_events)} new events to events/middle_age/")
+
+        # Step 8: Second outline generation (incremental)
+        section("Step 8: Second POST /api/biography/outline/generate (incremental)")
+        inc_outline_events = consume_sse(
+            "POST",
+            f"{base_url}/api/biography/outline/generate",
+            json_body={"user_id": test_user_id},
+            request_timeout=args.request_timeout,
+        )
+        if not inc_outline_events:
+            failures.append("incremental outline: no SSE events received")
+        inc_completed = [e for e in inc_outline_events if e[0] == "completed"]
+        if not inc_completed:
+            warn("incremental outline: no 'completed' event seen")
+
+        # Step 9: GET outline, check statuses
+        section("Step 9: GET outline after incremental update")
+        r = requests.get(outline_url, timeout=DEFAULT_TIMEOUT)
+        info(f"GET {outline_url} → HTTP {r.status_code}")
+        new_draft_ids: list[str] = []
+        outdated_ids: list[str] = []
+        written_ids: list[str] = []
+        if r.status_code != 200:
+            failures.append(f"incremental get outline: expected 200, got {r.status_code}")
+        else:
+            inc_outline = r.json()
+            inc_chapters = inc_outline.get("chapters") or []
+            info(f"total chapters after incremental: {len(inc_chapters)}")
+
+            for ch in inc_chapters:
+                if not isinstance(ch, dict):
+                    continue
+                ch_id = ch.get("id", "")
+                status = ch.get("status", "")
+                if ch_id not in first_run_chapter_ids:
+                    new_draft_ids.append(ch_id)
+                    info(f"  NEW DRAFT:     {ch_id} - {ch.get('title', '')!r}")
+                elif status == "outdated":
+                    outdated_ids.append(ch_id)
+                    info(f"  OUTDATED:      {ch_id} - {ch.get('title', '')!r}")
+                elif status == "written":
+                    written_ids.append(ch_id)
+                    info(f"  WRITTEN (ok):  {ch_id} - {ch.get('title', '')!r}")
+
+            if not new_draft_ids and not outdated_ids:
+                failures.append(
+                    "incremental outline: no new DRAFT or OUTDATED chapters detected; "
+                    f"first_run_ids={first_run_chapter_ids}, "
+                    f"all statuses: {[ch.get('status') for ch in inc_chapters if isinstance(ch, dict)]}"
+                )
+
+        # Step 10: Confirm all DRAFT and OUTDATED chapters
+        section("Step 10: PUT confirm all DRAFT and OUTDATED chapters")
+        to_confirm = new_draft_ids + outdated_ids
+        info(f"chapters to confirm: {to_confirm}")
+        confirmed_ok = 0
+        for ch_id in to_confirm:
+            confirm_url = (
+                f"{base_url}/api/biography/outline/{test_user_id}"
+                f"/chapters/{ch_id}/confirm"
+            )
+            try:
+                r = requests.put(
+                    confirm_url,
+                    json={"notes": "e2e incremental confirm"},
+                    timeout=DEFAULT_TIMEOUT,
+                )
+                if r.status_code == 200:
+                    body = r.json()
+                    if body.get("status") == "confirmed":
+                        confirmed_ok += 1
+                        info(f"  confirmed: {ch_id}")
+                    else:
+                        failures.append(
+                            f"confirm {ch_id}: expected status='confirmed', "
+                            f"got {body.get('status')!r}"
+                        )
+                else:
+                    failures.append(
+                        f"confirm {ch_id}: expected 200, got {r.status_code}: {r.text[:200]}"
+                    )
+            except requests.RequestException as exc:
+                failures.append(f"confirm {ch_id}: network error: {exc}")
+
+        info(f"confirmed {confirmed_ok}/{len(to_confirm)} chapters")
+
+        # Step 11: Second writing run
+        section("Step 11: Second POST /api/biography/writing/run")
+        inc_writing_events = consume_sse(
+            "POST",
+            f"{base_url}/api/biography/writing/run",
+            json_body={"user_id": test_user_id},
+            request_timeout=args.request_timeout,
+        )
+        if not inc_writing_events:
+            failures.append("incremental writing: no SSE events received")
+        inc_writing_completed = [e for e in inc_writing_events if e[0] == "completed"]
+        if not inc_writing_completed:
+            warn("incremental writing: no 'completed' event")
+
+        # Step 12: GET full, verify word count increased
+        section("Step 12: GET full biography after incremental update")
+        r = requests.get(full_url, timeout=DEFAULT_TIMEOUT)
+        info(f"GET {full_url} → HTTP {r.status_code}")
+        if r.status_code != 200:
+            failures.append(f"incremental get full: expected 200, got {r.status_code}")
+        else:
+            body = r.json()
+            new_wc = body.get("total_word_count", 0)
+            info(f"first run word_count  = {first_run_word_count}")
+            info(f"second run word_count = {new_wc}")
+            if new_wc <= first_run_word_count:
+                failures.append(
+                    f"incremental full: expected word_count > {first_run_word_count}, "
+                    f"got {new_wc}"
+                )
+            info(f"full biography updated: {first_run_word_count} → {new_wc} bytes")
 
         # ---- Verify output files -----------------------------------------
         section("Verify Output Files")
