@@ -22,6 +22,7 @@ THIS_DIR = Path(__file__).resolve().parent
 SCRIPTS = [
     "test_interview_api.py",
     "test_kb_organizer_api.py",
+    "test_biography_api.py",
     "test_biography_outline_api.py",
     "test_biography_writing_api.py",
 ]
