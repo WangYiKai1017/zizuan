@@ -130,3 +130,20 @@ class TestSSEEmitter:
         
         # Only "first" and "done" should appear
         assert len(chunks) == 2
+
+    async def test_trace_output_includes_all_emitted_events(self):
+        emitter = SSEEmitter()
+
+        await emitter.emit("agent_message", {"message": "你好"})
+        await emitter.emit_done("结束")
+
+        output = emitter.trace_output("completed", route="interview.message")
+
+        assert output["status"] == "completed"
+        assert output["route"] == "interview.message"
+        assert output["events_emitted"] == 2
+        assert output["events_sent"] == 0
+        assert [item["event"] for item in output["events"]] == ["agent_message", "done"]
+        assert output["events"][0]["data"]["message"] == "你好"
+        assert output["events"][1]["data"]["message"] == "结束"
+        assert "timestamp" in output["events"][0]["data"]

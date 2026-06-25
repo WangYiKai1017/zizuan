@@ -181,7 +181,7 @@ async def generate_story(request: UserIdRequest):
         operation="generate",
         route="POST /stories/generate",
         user_id=request.user_id,
-        input={"user_id": request.user_id},
+        input=request.model_dump(mode="json", exclude_none=True),
     )
     try:
         _validate_user_kb(request.user_id)
@@ -231,11 +231,7 @@ async def generate_story(request: UserIdRequest):
             api_observation.end(
                 status=status,
                 error=error,
-                output={
-                    "status": status,
-                    "events_emitted": emitter.emitted_count,
-                    "events_sent": emitter.sent_count,
-                },
+                output=emitter.trace_output(status),
             )
 
     return EventSourceResponse(generate())

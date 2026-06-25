@@ -40,7 +40,7 @@ async def run_writing(request: UserIdRequest):
         operation="run",
         route="POST /biography/writing/run",
         user_id=request.user_id,
-        input={"user_id": request.user_id},
+        input=request.model_dump(mode="json", exclude_none=True),
     )
     try:
         _validate_user_kb(request.user_id)
@@ -90,11 +90,7 @@ async def run_writing(request: UserIdRequest):
             api_observation.end(
                 status=status,
                 error=error,
-                output={
-                    "status": status,
-                    "events_emitted": emitter.emitted_count,
-                    "events_sent": emitter.sent_count,
-                },
+                output=emitter.trace_output(status),
             )
 
     return EventSourceResponse(generate())

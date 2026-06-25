@@ -138,7 +138,7 @@ async def start_interview(request: UserIdRequest):
         operation="start",
         route="POST /interview/start",
         user_id=request.user_id,
-        input={"user_id": request.user_id},
+        input=request.model_dump(mode="json", exclude_none=True),
     )
     try:
         session_manager = SessionManager.get_instance()
@@ -172,7 +172,10 @@ async def start_interview(request: UserIdRequest):
             "phase": phase,
         })
         await emitter.emit_done("会话已建立")
-        api_observation.end(status="completed", output={"reused": True})
+        api_observation.end(
+            status="completed",
+            output=emitter.trace_output("completed", reused=True),
+        )
         return EventSourceResponse(emitter.stream())
 
     emitter = SSEEmitter()
@@ -207,11 +210,7 @@ async def start_interview(request: UserIdRequest):
             api_observation.end(
                 status=status,
                 error=error,
-                output={
-                    "status": status,
-                    "events_emitted": emitter.emitted_count,
-                    "events_sent": emitter.sent_count,
-                },
+                output=emitter.trace_output(status),
             )
 
     return EventSourceResponse(generate())
@@ -226,7 +225,7 @@ async def send_message(request: InterviewMessageRequest):
         route="POST /interview/message",
         user_id=request.user_id,
         session_id=request.session_id,
-        input={"user_id": request.user_id, "session_id": request.session_id},
+        input=request.model_dump(mode="json", exclude_none=True),
     )
     try:
         session_manager = SessionManager.get_instance()
@@ -284,11 +283,7 @@ async def send_message(request: InterviewMessageRequest):
             api_observation.end(
                 status=status,
                 error=error,
-                output={
-                    "status": status,
-                    "events_emitted": emitter.emitted_count,
-                    "events_sent": emitter.sent_count,
-                },
+                output=emitter.trace_output(status),
             )
 
     return EventSourceResponse(generate())
@@ -303,7 +298,7 @@ async def end_interview(request: InterviewEndRequest):
         route="POST /interview/end",
         user_id=request.user_id,
         session_id=request.session_id,
-        input={"user_id": request.user_id, "session_id": request.session_id},
+        input=request.model_dump(mode="json", exclude_none=True),
     )
     try:
         session_manager = SessionManager.get_instance()

@@ -40,6 +40,7 @@ class SSEEmitter:
         self._closed = False
         self.emitted_count = 0
         self.sent_count = 0
+        self._events: list[dict[str, Any]] = []
     
     async def emit(self, event: str, data: Dict[str, Any]) -> None:
         """Emit an SSE event. Automatically adds timestamp if not present."""
@@ -47,7 +48,9 @@ class SSEEmitter:
             return
         if "timestamp" not in data:
             data["timestamp"] = datetime.now(timezone.utc).astimezone().isoformat()
-        await self._queue.put(SSEEvent(event=event, data=data))
+        sse_event = SSEEvent(event=event, data=data)
+        self._events.append(self._event_snapshot(sse_event))
+        await self._queue.put(sse_event)
         self.emitted_count += 1
     
     async def emit_error(self, code: str, message: str, recoverable: bool = False) -> None:
@@ -72,3 +75,26 @@ class SSEEmitter:
                 break
             self.sent_count += 1
             yield JSONServerSentEvent(data=event.data, event=event.event)
+
+    @property
+    def events(self) -> list[dict[str, Any]]:
+        """Return emitted SSE events as JSON-serializable trace payloads."""
+        return list(self._events)
+
+    def trace_output(self, status: str, **extra: Any) -> dict[str, Any]:
+        """Build route-level Langfuse output including all emitted SSE events."""
+        output = {
+            "status": status,
+            "events_emitted": self.emitted_count,
+            "events_sent": self.sent_count,
+            "events": self.events,
+        }
+        output.update(extra)
+        return output
+
+    @staticmethod
+    def _event_snapshot(event: SSEEvent) -> dict[str, Any]:
+        return {
+            "event": event.event,
+            "data": json.loads(json.dumps(event.data, ensure_ascii=False, default=str)),
+        }
