@@ -122,6 +122,7 @@ class TestCheckKnowledgeBase:
                 "## 基本信息\n"
                 "- 姓名: 张三\n"
                 "- 年龄: 75\n"
+                "- 性别: 男\n"
                 "- 职业: 退休工人\n"
                 "- 家庭状况: 与妻子同住\n"
                 "- 居住情况: 上海，与老伴同住\n",
@@ -410,6 +411,24 @@ class TestGuidedInitialInterviewController:
             assert state["current_question_id"] == "q002"
 
     @pytest.mark.asyncio
+    async def test_completed_question_advances_in_sequence_even_if_next_question_id_is_present(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            controller = self._controller(tmpdir, {
+                "question": "这个画面很清楚了。那您父母小时候是什么性格？",
+                "source": "generated",
+                "candidate_question_id": None,
+                "guided_question_completed": True,
+                "move_to_next_guided_question": True,
+                "next_question_id": "q017",
+            })
+
+            await controller.generate_next(user_input="我家老屋窗外有一棵大树。")
+            state = controller.load_state()
+
+            assert "q001" in state["completed_question_ids"]
+            assert state["current_question_id"] == "q002"
+
+    @pytest.mark.asyncio
     async def test_does_not_advance_after_one_followup(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             controller = self._controller(tmpdir, {
@@ -497,7 +516,7 @@ class TestEndSession:
             agent.cache_tool.get_cache = MagicMock(return_value=None)
 
             result = await agent.end_session()
-            assert "再见" in result
+            assert result["message"] == "再见"
             assert agent.phase == SessionPhase.CLOSED
             assert agent.structured_archive_result["status"] == "success"
             agent.archive_tool.archive_conversation.assert_awaited_once()
@@ -530,7 +549,7 @@ class TestEndSession:
 
             result = await agent.end_session()
 
-            assert "再见" in result
+            assert result["message"] == "再见"
             assert agent.phase == SessionPhase.CLOSED
             assert agent.structured_archive_result["status"] == "failed"
             assert "invalid life_phase" in agent.structured_archive_result["error"]
@@ -543,7 +562,7 @@ class TestEndSession:
             agent = _make_session_agent(tmpdir)
             agent.phase = SessionPhase.CLOSED
             result = await agent.end_session()
-            assert result == "会话已关闭"
+            assert result == {"message": "会话已关闭", "title": ""}
 
 
 # ============================================================
@@ -683,6 +702,15 @@ class TestResumeSession:
             assert agent.interview_agent is not None
             assert agent.interview_agent.topic_history == ["家庭", "工作"]
             assert agent.interview_agent.current_topic == "童年"
+            start_calls = [
+                call
+                for call in agent.llm_service.invoke.await_args_list
+                if call.kwargs.get("trace_node") == "start.guided_resume"
+            ]
+            assert start_calls
+            assert "当前受控采访要继续的问题" in start_calls[-1].kwargs["prompt"]
+            assert "您人生中最早的记忆是什么？" in start_calls[-1].kwargs["prompt"]
+            assert result == "欢迎回来"
 
 
 # ============================================================

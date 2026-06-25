@@ -30,6 +30,7 @@ async def test_generate_next_question_uses_json_mode_with_recent_context() -> No
     assert kwargs["response_format"] == {"type": "json_object"}
     assert kwargs["trace_node"] == "profile.generate_next_question"
     assert kwargs["trace_metadata"]["missing_required_fields"] == [
+        "gender",
         "occupation",
         "family_status",
         "living_arrangement",
@@ -56,7 +57,7 @@ async def test_generate_next_question_rejects_invalid_target_field() -> None:
 
     question = await agent._generate_next_question()
 
-    assert question == "您以前主要是做什么工作的？"
+    assert question == "方便问一下您的性别吗？"
 
 
 @pytest.mark.asyncio
@@ -131,6 +132,7 @@ def test_profile_phase_decision_is_observed_with_output() -> None:
         initial_info={
             "name": "兰地",
             "age": "78",
+            "gender": "男",
             "occupation": "退休教师",
             "family_status": "与老伴同住",
             "living_arrangement": "上海，与老伴同住",

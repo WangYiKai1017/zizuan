@@ -99,10 +99,13 @@ class InterviewAgent:
         如果有resume_prompt，使用它生成开场白
         否则，使用标准开场模板生成开场白
         """
-        guided_opening = self.guided_controller.build_start_message(
-            address_style=self.address_style,
-            resume_summary=self.guided_resume_summary,
-        )
+        guided_question = self.guided_controller.current_start_question()
+        if guided_question and self.resume_prompt:
+            guided_opening = await self._generate_guided_resume_opening(guided_question)
+        else:
+            guided_opening = self.guided_controller.build_start_message(
+                address_style=self.address_style,
+            )
         if guided_opening:
             self._record_turn("assistant", guided_opening)
             return guided_opening
@@ -134,6 +137,48 @@ class InterviewAgent:
         self._record_turn("assistant", opening)
         
         return opening
+
+    async def _generate_guided_resume_opening(self, guided_question: Dict[str, str]) -> str:
+        """Generate a natural resume opening while preserving the current guided question."""
+        address = self.address_style or "您"
+        guided_question_text = guided_question.get("question", "")
+        guided_stage = guided_question.get("stage_label") or guided_question.get("stage") or ""
+        resume_summary = (self.guided_resume_summary or "").strip()
+
+        prompt = f"""{self.resume_prompt}
+
+## 当前受控采访要继续的问题
+- 阶段：{guided_stage}
+- 问题：{guided_question_text}
+
+## 开场要求
+请生成一段自然的续聊开场白：
+1. 用“{address}”称呼被采访者。
+2. 可以自然承接上次采访内容，但不要把摘要硬贴到句子里。
+3. 结尾要自然引出“当前受控采访要继续的问题”，保持采访按预设顺序推进。
+4. 语气像晚辈和长辈聊天，温暖、顺滑、口语化。
+5. 字数控制在 80 字左右。
+6. 只输出开场白本身。
+
+## 上次摘要补充
+{resume_summary or "无"}
+"""
+        try:
+            opening = await self.llm_service.invoke(
+                prompt=prompt,
+                temperature=0.7,
+                trace_node="start.guided_resume",
+            )
+            text = str(opening.content).strip()
+            if text:
+                return text
+        except Exception as e:
+            logger.warning("Failed to generate guided resume opening: %s", e)
+
+        return (
+            f"{address}，欢迎回来。上次聊到的内容我们先放在心里，"
+            f"今天我们顺着之前的节奏慢慢接着聊：{guided_question_text}"
+        )
     
     async def handle_input(
         self,

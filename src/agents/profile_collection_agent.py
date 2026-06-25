@@ -517,6 +517,7 @@ class ProfileCollectionAgent:
         fallback_questions = {
             "name": "请问您怎么称呼？",
             "age": "请问您今年高寿了？",
+            "gender": "方便问一下您的性别吗？",
             "occupation": "您以前主要是做什么工作的？",
             "family_status": "您方便说说家里的情况吗？比如现在家里有哪些亲人常联系。",
             "living_arrangement": "您现在是自己住，还是和家人一起住呢？",
