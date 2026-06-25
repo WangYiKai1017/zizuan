@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import FileResponse
 
 router = APIRouter(prefix="/files", tags=["files"])
 
@@ -28,6 +29,28 @@ def _get_content_type(filename: str) -> str:
         return "text/yaml"
     else:
         return "text/plain"
+
+
+# Binary file extensions → MIME types (served as raw file download, not JSON-wrapped text)
+_BINARY_MIME_TYPES: dict[str, str] = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+    ".svg": "image/svg+xml",
+    ".ico": "image/x-icon",
+    ".mp3": "audio/mpeg",
+    ".wav": "audio/wav",
+    ".ogg": "audio/ogg",
+    ".mp4": "video/mp4",
+    ".pdf": "application/pdf",
+}
+
+
+def _is_binary_file(filename: str) -> bool:
+    """Check if a file should be served as binary (not read as text)."""
+    return Path(filename).suffix.lower() in _BINARY_MIME_TYPES
 
 
 def _check_path_traversal(path: str) -> None:
@@ -214,6 +237,16 @@ async def get_file_or_directory(user_id: str, path: str) -> dict[str, Any]:
             "items": items,
         }
     else:
+        # Binary files → serve raw via FileResponse (images, audio, etc.)
+        suffix = target.suffix.lower()
+        if suffix in _BINARY_MIME_TYPES:
+            return FileResponse(
+                path=str(target),
+                media_type=_BINARY_MIME_TYPES[suffix],
+                filename=target.name,
+            )
+
+        # Text files → JSON-wrapped content
         stat = target.stat()
         mtime = datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc)
         content = target.read_text(encoding="utf-8")
