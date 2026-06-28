@@ -19,20 +19,21 @@ import time
 from pathlib import Path
 
 THIS_DIR = Path(__file__).resolve().parent
+E2E_DIR = THIS_DIR.parent / "e2e"
 SCRIPTS = [
-    "test_interview_api.py",
-    "test_kb_organizer_api.py",
-    "test_biography_api.py",
-    "test_biography_outline_api.py",
-    "test_biography_writing_api.py",
+    (E2E_DIR / "test_track_a_interview.py"),
+    (THIS_DIR / "test_kb_organizer_api.py"),
+    (E2E_DIR / "test_track_b_biography.py"),
+    (THIS_DIR / "test_biography_outline_api.py"),
+    (THIS_DIR / "test_biography_writing_api.py"),
 ]
 
 
 def main() -> int:
     results: list[tuple[str, int, float]] = []
 
-    for name in SCRIPTS:
-        path = THIS_DIR / name
+    for path in SCRIPTS:
+        name = path.name
         print(f"\n############ Running {name} ############", flush=True)
         if not path.exists():
             print(f"[SKIP] {name} — file not found", flush=True)

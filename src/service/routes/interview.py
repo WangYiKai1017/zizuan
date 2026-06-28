@@ -94,40 +94,59 @@ def _read_user_profile(file_manager: MarkdownFileManager) -> dict:
 @router.post("/profile/prefill")
 async def prefill_interview_profile(request: InterviewProfilePrefillRequest):
     """Store WeChat-provided profile fields before starting a new interview."""
-    user_id = request.user_id
-    profile_info = {
-        "wechat_id": request.wechat_id,
-        "name": request.name,
-        "age": request.age,
-        "birth_date": request.birth_date,
-        "birth_year": _extract_birth_year(request.birth_date),
-        "gender": _normalize_gender(request.gender),
-    }
-    profile_info = {
-        key: value
-        for key, value in profile_info.items()
-        if value is not None and value != ""
-    }
-
-    file_manager = MarkdownFileManager(
-        base_path=str(_knowledge_base_root()),
-        conversation_id=user_id,
+    api_observation = start_api_observation(
+        agent="interview",
+        operation="profile_prefill",
+        route="POST /interview/profile/prefill",
+        user_id=request.user_id,
+        input=request.model_dump(mode="json", exclude_none=True),
     )
-    profile_path = file_manager.create_or_update_user_md(profile_info)
-    summary_index_path = file_manager.create_or_update_summary_index()
+    try:
+        user_id = request.user_id
+        profile_info = {
+            "wechat_id": request.wechat_id,
+            "name": request.name,
+            "age": request.age,
+            "birth_date": request.birth_date,
+            "birth_year": _extract_birth_year(request.birth_date),
+            "gender": _normalize_gender(request.gender),
+        }
+        profile_info = {
+            key: value
+            for key, value in profile_info.items()
+            if value is not None and value != ""
+        }
 
-    stored_profile = _read_user_profile(file_manager)
-    missing_required = _missing_required_profile_fields(stored_profile)
-    return JSONResponse(content={
-        "status": "ok",
-        "user_id": user_id,
-        "wechat_id": request.wechat_id,
-        "profile": stored_profile,
-        "profile_path": profile_path,
-        "summary_index_path": summary_index_path,
-        "profile_complete": not missing_required,
-        "missing_required_fields": missing_required,
-    })
+        file_manager = MarkdownFileManager(
+            base_path=str(_knowledge_base_root()),
+            conversation_id=user_id,
+        )
+        profile_path = file_manager.create_or_update_user_md(profile_info)
+        summary_index_path = file_manager.create_or_update_summary_index()
+
+        stored_profile = _read_user_profile(file_manager)
+        missing_required = _missing_required_profile_fields(stored_profile)
+        result = {
+            "status": "ok",
+            "user_id": user_id,
+            "wechat_id": request.wechat_id,
+            "profile": stored_profile,
+            "profile_path": profile_path,
+            "summary_index_path": summary_index_path,
+            "profile_complete": not missing_required,
+            "missing_required_fields": missing_required,
+        }
+        api_observation.end(
+            status="completed",
+            output={
+                "profile_complete": result["profile_complete"],
+                "missing_required_fields": missing_required,
+            },
+        )
+        return JSONResponse(content=result)
+    except Exception as ex:
+        api_observation.end(status="failed", error=ex)
+        raise
 
 
 @router.post("/start")
@@ -291,7 +310,11 @@ async def send_message(request: InterviewMessageRequest):
 
 @router.post("/end")
 async def end_interview(request: InterviewEndRequest):
-    """End an interview session. Returns JSON summary."""
+    """End an interview session. Returns JSON summary.
+
+    Idempotent: calling end on an already-ended session returns 200 with
+    status='already_ended' instead of 404.
+    """
     api_observation = start_api_observation(
         agent="interview",
         operation="end",
@@ -304,14 +327,19 @@ async def end_interview(request: InterviewEndRequest):
         session_manager = SessionManager.get_instance()
         session = await session_manager.get_active_session(request.user_id)
 
+        # Idempotent: session already gone → return 200 with already_ended
         if not session or session.agent_type != AgentType.INTERVIEW:
-            raise HTTPException(status_code=404, detail={
-                "error": {"code": "SESSION_NOT_FOUND", "message": "会话不存在", "details": None}
-            })
+            already_ended = {
+                "status": "already_ended",
+                "session_id": request.session_id,
+                "user_id": request.user_id,
+            }
+            api_observation.end(status="completed", output=already_ended)
+            return JSONResponse(content=already_ended)
 
         if session.session_id != request.session_id:
             raise HTTPException(status_code=404, detail={
-                "error": {"code": "SESSION_NOT_FOUND", "message": "会话ID不匹配", "details": None}
+                "error": {"code": "SESSION_MISMATCH", "message": "会话ID不匹配", "details": None}
             })
 
         api_observation.set_session_id(request.session_id)

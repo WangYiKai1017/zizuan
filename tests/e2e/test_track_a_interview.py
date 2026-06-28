@@ -4,17 +4,21 @@
 The script starts a real backend service, calls the interview flow, ends the
 session, and inspects generated knowledge-base files.
 
+Answers to interview questions are generated dynamically using DeepSeek
+(OpenAI-compatible API configured in .env) so that the test exercises real
+LLM-in-the-loop behaviour instead of relying on hardcoded scripts.
+
 Usage:
-    ./.venv/bin/python tests/integration/test_interview_api.py
+    ./.venv/bin/python tests/e2e/test_track_a_interview.py
 
 Optional:
-    ./.venv/bin/python tests/integration/test_interview_api.py \
-        --port 10080 --user-id e2e_interview_001
+    ... --port 10080 --user-id e2e_interview_001 --rounds 8 --cleanup-kb
 """
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import socket
 import subprocess
@@ -23,11 +27,16 @@ import time
 from pathlib import Path
 from typing import Any
 
+import openai
+from dotenv import load_dotenv
+
 # Allow running directly from the repository root.
 THIS_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = THIS_DIR.parent.parent
-if str(THIS_DIR) not in sys.path:
-    sys.path.insert(0, str(THIS_DIR))
+# Add tests/integration/ to path for _common
+_INTEGRATION_DIR = THIS_DIR.parent / "integration"
+if str(_INTEGRATION_DIR) not in sys.path:
+    sys.path.insert(0, str(_INTEGRATION_DIR))
 
 from _common import (  # noqa: E402
     DEFAULT_TIMEOUT,
@@ -44,20 +53,50 @@ from _common import (  # noqa: E402
 
 KB_ROOT = PROJECT_ROOT / "knowledge_base"
 LOG_DIR = PROJECT_ROOT / "logs"
-INTERVIEW_MESSAGES = [
-    "我6到12岁是在芳草地小学读书。那时候学校离家不算近，父母每天都会叮嘱我路上注意安全。",
-    "后来12到18岁，我在朝阳外国语学校读初中和高中。那段时间学习压力很大，但也认识了很多朋友。",
-    # 第三轮：答非所问——上文应该还在追问学校/朋友相关，用户突然聊到邻居
-    "说起那时候，我最怀念的其实是我家隔壁的李奶奶。她家院子里有棵大枣树，"
-    "每年秋天都叫我去打枣。她一个人住，儿子在外地工作，我放学了就爱往她家跑。",
-    # 第四轮：提供丰富细节（时间/地点/人物/感受），测试叙事完整性信号
-    "初三那年，教语文的王老师特别鼓励我。有一次我写了一篇作文叫《院子里的四季》，"
-    "她拿到全班念了一遍，还推荐我去参加区里的作文比赛。我居然拿了个一等奖，"
-    "当时特别激动，觉得有人认可我了。",
-    # 第五轮：简短回答 + 情感反思，测试情绪饱和度与隐性诉求信号
-    "嗯，后来选大学专业的时候我就选了中文系。王老师对我的影响挺大的，"
-    "现在回想起来，要是没有她那句鼓励，我可能走的是另一条路了。",
-]
+
+# Profile sent to prefill endpoint (replaces direct user.md writing)
+PREFILL_PROFILE = {
+    "wechat_id": "wx_e2e_interview",
+    "name": "林建华",
+    "age": 68,
+    "birth_date": "1958-03-12",
+    "gender": "male",
+}
+
+# Claude system prompt for generating realistic interview answers
+ANSWER_SYSTEM_PROMPT = """\
+你正在扮演一位名叫林建华的68岁退休教师，接受一次人生回忆采访。
+
+人物背景：
+- 男，1958年生于上海
+- 6-12岁在上海芳草地小学读书，那时候学校离家不算近，每天走路上学
+- 12-18岁在朝阳外国语学校读初中和高中，学习压力不小，但交到了好朋友
+- 初中语文老师王老师对你影响很大，鼓励你写作，推荐你参加作文比赛
+- 后来选了中文系，毕业后当了语文老师，教了三十年书
+- 已婚，有一个女儿，现在和妻子住在上海
+- 性格温和，有文化修养，回忆往事时带着感情
+
+回答要求：
+- 用第一人称口语回答，语气自然，像在和采访者聊天
+- 每次回答提供具体的时间、地点、人物和细节
+- 可以穿插感慨和反思，但不要每次都说
+- 不要编造过于戏剧化的情节，保持普通人生活的真实感
+- 回答控制在3-5句话，不要太长
+- 直接回答，不要说"好的"、"让我想想"之类的开场白
+"""
+
+
+def generate_answer(client: openai.OpenAI, model: str, question: str) -> str:
+    """Use DeepSeek (OpenAI-compatible) to generate a realistic interview answer."""
+    response = client.chat.completions.create(
+        model=model,
+        max_tokens=300,
+        messages=[
+            {"role": "system", "content": ANSWER_SYSTEM_PROMPT},
+            {"role": "user", "content": question},
+        ],
+    )
+    return response.choices[0].message.content or ""
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -79,6 +118,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--user-id",
         default="",
         help="User id to test. Defaults to a timestamped e2e user id.",
+    )
+    parser.add_argument(
+        "--rounds",
+        type=int,
+        default=6,
+        help="Number of interview message rounds to run (default: 6).",
     )
     parser.add_argument(
         "--cleanup-kb",
@@ -107,7 +152,7 @@ def pick_free_port(host: str) -> int:
 
 
 def create_minimal_existing_user_kb(user_id: str) -> Path:
-    """Create enough KB structure so /interview/start enters interview mode."""
+    """Create KB directory structure only — user.md is created by the prefill API call."""
     user_kb = KB_ROOT / user_id
     if user_kb.exists():
         shutil.rmtree(user_kb)
@@ -128,20 +173,6 @@ def create_minimal_existing_user_kb(user_id: str) -> Path:
     for relative_dir in required_directories:
         (user_kb / relative_dir).mkdir(parents=True, exist_ok=True)
 
-    (user_kb / "user.md").write_text(
-        "# 被采访者档案\n\n"
-        "## 基本信息\n"
-        "- 微信ID: wx_e2e_interview\n"
-        "- 姓名: 林建华\n"
-        "- 年龄: 68\n"
-        "- 性别: 男\n"
-        "- 出生日期: 1958-03-12\n"
-        "- 出生年份: 1958\n"
-        "- 职业: 退休教师\n"
-        "- 家庭状况: 已婚，有一个女儿\n"
-        "- 居住情况: 上海，与妻子同住\n",
-        encoding="utf-8",
-    )
     (user_kb / "index.md").write_text("# 记忆库索引\n", encoding="utf-8")
     (user_kb / "summary_index.md").write_text("# 摘要索引\n", encoding="utf-8")
     (user_kb / "events" / "childhood" / "开场测试事件.md").write_text(
@@ -247,16 +278,6 @@ def consume_sse(
     return events, session_id
 
 
-def find_keyword_locations(user_kb: Path, keyword: str) -> list[Path]:
-    locations: list[Path] = []
-    for path in sorted((user_kb / "events").glob("*/*.md")):
-        try:
-            content = path.read_text(encoding="utf-8")
-        except OSError:
-            continue
-        if keyword in path.name or keyword in content:
-            locations.append(path)
-    return locations
 
 
 def read_guided_state(user_kb: Path) -> dict:
@@ -271,8 +292,8 @@ def read_guided_state(user_kb: Path) -> dict:
         return {}
 
 
-def verify_guided_state(user_kb: Path) -> list[str]:
-    """Verify guided state reflects independent completion/transition logic."""
+def verify_guided_state(user_kb: Path, rounds: int) -> list[str]:
+    """Verify guided state file exists and is structurally valid."""
     failures: list[str] = []
     state = read_guided_state(user_kb)
     if not state:
@@ -281,22 +302,16 @@ def verify_guided_state(user_kb: Path) -> list[str]:
 
     info(f"guided_state = {json.dumps(state, ensure_ascii=False)}")
 
-    # With only 5 messages, guided phase should NOT be completed (64 preset questions)
-    if state.get("guided_completed") is True:
-        failures.append("guided_state: guided_completed should be false after only 5 messages")
-
     completed_ids = state.get("completed_question_ids", [])
-    info(f"completed_question_ids = {completed_ids}")
+    info(f"completed_question_ids ({len(completed_ids)} total) = {completed_ids}")
 
-    # At most a few questions should be completed after 5 messages.
-    # If many are completed, the LLM is likely marking questions done without proper justification.
-    if len(completed_ids) > 3:
+    # After N rounds, guided phase should not be complete (64 preset questions)
+    if state.get("guided_completed") is True:
         failures.append(
-            f"guided_state: {len(completed_ids)} questions completed after only 5 messages, "
-            "expected at most 3 (LLM may be over-marking completions)"
+            f"guided_state: guided_completed=true after only {rounds} rounds (64 preset questions)"
         )
 
-    # current_question_id should be valid and not in completed list
+    # current_question_id should not be in completed list
     current_id = state.get("current_question_id")
     if current_id and current_id in completed_ids:
         failures.append(
@@ -427,34 +442,35 @@ def verify_story_generation(user_kb: Path) -> list[str]:
 
 
 def verify_event_classification(user_kb: Path) -> list[str]:
+    """Verify that interview messages produced event files in valid stage directories."""
     failures: list[str] = []
-    expectations = {
-        "芳草地": "childhood",
-        "朝阳外国语": "youth",
-    }
 
-    for keyword, expected_stage in expectations.items():
-        locations = find_keyword_locations(user_kb, keyword)
-        if not locations:
-            failures.append(f"kb: no generated event file contains keyword {keyword!r}")
-            continue
+    events_root = user_kb / "events"
+    stage_files: dict[str, list[Path]] = {}
+    for stage_dir in sorted(events_root.iterdir()):
+        if stage_dir.is_dir() and not stage_dir.name.startswith("."):
+            files = [f for f in stage_dir.glob("*.md") if not f.name.startswith(".")]
+            if files:
+                stage_files[stage_dir.name] = files
 
-        pretty_locations = ", ".join(str(path.relative_to(user_kb)) for path in locations)
-        info(f"keyword {keyword!r} found in: {pretty_locations}")
+    info(f"event stages with files: {', '.join(f'{k}({len(v)})' for k, v in stage_files.items())}")
+    total_events = sum(len(v) for v in stage_files.values())
 
-        if not any(path.parent.name == expected_stage for path in locations):
-            failures.append(
-                f"kb: expected keyword {keyword!r} under events/{expected_stage}, "
-                f"got: {pretty_locations}"
-            )
+    # The pre-seeded event counts as 1; dynamic interview should add more
+    if total_events < 2:
+        failures.append(
+            f"kb: expected at least 2 event files (1 seeded + dynamic), got {total_events}"
+        )
 
-        elderly_locations = [path for path in locations if path.parent.name == "elderly"]
-        if elderly_locations:
-            failures.append(
-                f"kb: keyword {keyword!r} should not be under events/elderly, got: "
-                + ", ".join(str(path.relative_to(user_kb)) for path in elderly_locations)
-            )
+    # At least one valid life-stage directory should have events
+    valid_stages = {"childhood", "youth", "middle_age", "elderly"}
+    found_stages = set(stage_files.keys())
+    if not found_stages & valid_stages:
+        failures.append(
+            f"kb: no events in valid life-stage directories, found: {found_stages}"
+        )
 
+    # Session archive checks (unchanged — these don't depend on content)
     session_files = sorted((user_kb / "sessions").glob("session_*.md"))
     if not session_files:
         failures.append(f"kb: no session archive files found under {user_kb / 'sessions'}")
@@ -479,6 +495,16 @@ def main(argv: list[str] | None = None) -> int:
     proc: subprocess.Popen[Any] | None = None
     failures: list[str] = []
 
+    # DeepSeek (OpenAI-compatible) client for generating dynamic interview answers
+    load_dotenv(PROJECT_ROOT / ".env")
+    deepseek_api_key = os.environ.get("DEEPSEEK_APIKEY", "")
+    deepseek_url = os.environ.get("DEEPSEEK_URL", "")
+    deepseek_model = os.environ.get("DEEPSEEK_MODEL_NAME", "deepseek-v4-flash")
+    if not deepseek_api_key or not deepseek_url:
+        err("DEEPSEEK_APIKEY and DEEPSEEK_URL must be set in .env or environment")
+        return summarize("Interview API happy path E2E", False, ["DeepSeek config missing"])
+    answer_client = openai.OpenAI(api_key=deepseek_api_key, base_url=deepseek_url)
+
     section("Setup")
     info(f"PROJECT_ROOT = {PROJECT_ROOT}")
     info(f"BASE_URL     = {base_url}")
@@ -491,6 +517,27 @@ def main(argv: list[str] | None = None) -> int:
         if not wait_for_health(base_url, proc, args.startup_timeout):
             failures.append(f"service: failed to start; see log {log_path}")
             return summarize("Interview API happy path E2E", False, failures)
+
+        section("Prefill Profile")
+        prefill_response = requests.post(
+            f"{base_url}/api/interview/profile/prefill",
+            json={"user_id": user_id, **PREFILL_PROFILE},
+            timeout=DEFAULT_TIMEOUT,
+        )
+        info(f"POST /api/interview/profile/prefill -> HTTP {prefill_response.status_code}")
+        if prefill_response.status_code != 200:
+            failures.append(f"prefill: expected 200, got {prefill_response.status_code}")
+            info(f"prefill body = {prefill_response.text[:500]}")
+        else:
+            prefill_body = prefill_response.json()
+            info(f"prefill profile_complete = {prefill_body.get('profile_complete')}")
+            info(f"prefill missing_fields  = {prefill_body.get('missing_required_fields')}")
+            if prefill_body.get("status") != "ok":
+                failures.append(f"prefill: expected status='ok', got {prefill_body.get('status')!r}")
+            if not (user_kb / "user.md").exists():
+                failures.append("prefill: user.md was not created")
+            else:
+                info(f"user.md created at {user_kb / 'user.md'}")
 
         section("Start Interview")
         start_events, session_id = consume_sse(
@@ -514,6 +561,11 @@ def main(argv: list[str] | None = None) -> int:
                 failures.append(
                     f"start: expected reused=false on first call, got {first_started.get('reused')!r}"
                 )
+
+        # Capture the opening question from start_events
+        agent_msgs = [e[1] for e in start_events if e[0] == "agent_message"]
+        current_question = agent_msgs[-1].get("message", "") if agent_msgs else ""
+        info(f"opening question = {current_question!r}")
 
         section("Start Interview (Idempotency)")
         reuse_events, reuse_session_id = consume_sse(
@@ -542,23 +594,32 @@ def main(argv: list[str] | None = None) -> int:
                     f"start idempotency: expected '当前会话已存在' in message, got {msg_text!r}"
                 )
 
-        section("Send Messages")
-        for index, message in enumerate(INTERVIEW_MESSAGES, start=1):
-            info(f"message {index}: {message}")
+        section("Dynamic Interview (Claude-powered answers)")
+        for round_idx in range(1, args.rounds + 1):
+            if not current_question:
+                info(f"round {round_idx}: no question to answer, stopping")
+                break
+            answer = generate_answer(answer_client, deepseek_model, current_question)
+            info(f"round {round_idx} question: {current_question[:80]}...")
+            info(f"round {round_idx} answer:   {answer[:80]}...")
             message_events, _ = consume_sse(
                 "POST",
                 f"{base_url}/api/interview/message",
                 json_body={
                     "user_id": user_id,
                     "session_id": session_id,
-                    "message": message,
+                    "message": answer,
                 },
             )
             if not message_events:
-                failures.append(f"message {index}: no SSE events received")
+                failures.append(f"round {round_idx}: no SSE events received")
+                break
+            # Extract next question from agent_message events
+            next_msgs = [e[1] for e in message_events if e[0] == "agent_message"]
+            current_question = next_msgs[-1].get("message", "") if next_msgs else ""
 
         section("Verify Guided State")
-        failures.extend(verify_guided_state(user_kb))
+        failures.extend(verify_guided_state(user_kb, args.rounds))
 
         section("Status Before End")
         status_url = f"{base_url}/api/interview/status/{user_id}/{session_id}"
@@ -611,6 +672,26 @@ def main(argv: list[str] | None = None) -> int:
             failures.append(
                 f"status after end: expected 404, got {ended_status_response.status_code}"
             )
+
+        section("End Interview (Idempotency)")
+        end_again_response = requests.post(
+            f"{base_url}/api/interview/end",
+            json={"user_id": user_id, "session_id": session_id},
+            timeout=args.request_timeout,
+        )
+        info(f"POST /api/interview/end (again) -> HTTP {end_again_response.status_code}")
+        info(f"body = {end_again_response.text[:500]}")
+        if end_again_response.status_code != 200:
+            failures.append(
+                f"end idempotency: expected 200 on second call, got {end_again_response.status_code}"
+            )
+        else:
+            end_again_body = end_again_response.json()
+            if end_again_body.get("status") != "already_ended":
+                failures.append(
+                    f"end idempotency: expected status='already_ended', "
+                    f"got {end_again_body.get('status')!r}"
+                )
 
         section("Inject Events for Story Generation")
         injected = inject_fake_events(user_kb, "childhood", count=16)

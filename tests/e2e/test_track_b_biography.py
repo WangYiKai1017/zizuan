@@ -30,8 +30,10 @@ from typing import Any
 
 THIS_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = THIS_DIR.parent.parent
-if str(THIS_DIR) not in sys.path:
-    sys.path.insert(0, str(THIS_DIR))
+# Add tests/integration/ to path for _common
+_INTEGRATION_DIR = THIS_DIR.parent / "integration"
+if str(_INTEGRATION_DIR) not in sys.path:
+    sys.path.insert(0, str(_INTEGRATION_DIR))
 
 from _common import (  # noqa: E402
     DEFAULT_TIMEOUT,
@@ -48,7 +50,7 @@ from _common import (  # noqa: E402
 
 KB_ROOT = PROJECT_ROOT / "knowledge_base"
 LOG_DIR = PROJECT_ROOT / "logs"
-FIXTURE_KB_DIR = THIS_DIR / "fixtures" / "biography_kb"
+FIXTURE_KB_DIR = _INTEGRATION_DIR / "fixtures" / "biography_kb"
 
 
 # ---------------------------------------------------------------------------
