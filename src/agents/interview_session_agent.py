@@ -385,7 +385,11 @@ class InterviewSessionAgent:
         self.phase = SessionPhase.PROFILE_COLLECTION
 
         prefilled_profile = self._parse_user_md(self.user_id)
-        
+
+        # 从预填画像计算称呼方式，传给 ProfileCollectionAgent
+        self.address_style = self._compute_address_style(prefilled_profile)
+        logger.info(f"Computed address_style from prefilled profile: {self.address_style}")
+
         # 创建初始化Agent（不使用时间限制，仅依赖必填字段检查）
         self.profile_agent = ProfileCollectionAgent(
             user_id=self.user_id,
@@ -393,6 +397,7 @@ class InterviewSessionAgent:
             memory_manager=self.memory_manager,
             max_duration_minutes=10**9,
             initial_info=prefilled_profile,
+            address_style=self.address_style,
         )
         
         # 执行初始化流程
