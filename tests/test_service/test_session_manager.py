@@ -128,6 +128,63 @@ async def test_get_interview_agent_wrong_type():
     """Test that get_interview_agent returns None for non-interview sessions."""
     sm = SessionManager.get_instance()
     await sm.acquire("user001", AgentType.KB_ORGANIZER)
-    
+
     result = await sm.get_interview_agent("user001")
     assert result is None
+
+
+@pytest.mark.asyncio
+async def test_biography_does_not_conflict_with_interview():
+    """Biography agents can run concurrently with interview (read-only on events)."""
+    sm = SessionManager.get_instance()
+    interview_sid = await sm.acquire("user001", AgentType.INTERVIEW)
+    bio_sid = await sm.acquire("user001", AgentType.BIOGRAPHY_OUTLINE)
+
+    assert interview_sid != bio_sid
+
+    # Both sessions should be retrievable
+    session = await sm.get_active_session("user001")
+    # Exclusive session takes priority in get_active_session
+    assert session.agent_type == AgentType.INTERVIEW
+
+
+@pytest.mark.asyncio
+async def test_biography_outline_and_writing_are_mutually_exclusive():
+    """Biography outline and writing cannot run at the same time."""
+    sm = SessionManager.get_instance()
+    await sm.acquire("user001", AgentType.BIOGRAPHY_OUTLINE)
+
+    with pytest.raises(SessionConflictError) as exc_info:
+        await sm.acquire("user001", AgentType.BIOGRAPHY_WRITING)
+
+    assert exc_info.value.active_type == AgentType.BIOGRAPHY_OUTLINE
+
+
+@pytest.mark.asyncio
+async def test_biography_release_frees_slot():
+    """Releasing a biography session allows a new biography agent to be acquired."""
+    sm = SessionManager.get_instance()
+    sid = await sm.acquire("user001", AgentType.BIOGRAPHY_OUTLINE)
+    released = await sm.release("user001", sid)
+    assert released is True
+
+    # Now can acquire a different biography type
+    sid2 = await sm.acquire("user001", AgentType.BIOGRAPHY_WRITING)
+    assert sid2 != sid
+
+
+@pytest.mark.asyncio
+async def test_biography_release_does_not_affect_interview():
+    """Releasing a biography session does not affect an active interview session."""
+    sm = SessionManager.get_instance()
+    interview_sid = await sm.acquire("user001", AgentType.INTERVIEW)
+    bio_sid = await sm.acquire("user001", AgentType.BIOGRAPHY_OUTLINE)
+
+    released = await sm.release("user001", bio_sid)
+    assert released is True
+
+    # Interview session should still be active
+    session = await sm.get_active_session("user001")
+    assert session is not None
+    assert session.agent_type == AgentType.INTERVIEW
+    assert session.session_id == interview_sid
