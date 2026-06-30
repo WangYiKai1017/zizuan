@@ -69,7 +69,7 @@ class InterviewAgent:
         # 继续对话Prompt
         self.resume_prompt = resume_prompt
 
-        # 对被采访者的称呼方式（如“张爷爷”、“李叔叔”、“您”）
+        # 对被采访者的称呼方式（如"张爷爷"、"李叔叔"、"您"）
         self.address_style: str = address_style or "您"
 
         self.knowledge_base_root = Path(knowledge_base_root) if knowledge_base_root else (
@@ -140,7 +140,6 @@ class InterviewAgent:
 
     async def _generate_guided_resume_opening(self, guided_question: Dict[str, str]) -> str:
         """Generate a natural resume opening while preserving the current guided question."""
-        address = self.address_style or "您"
         guided_question_text = guided_question.get("question", "")
         guided_stage = guided_question.get("stage_label") or guided_question.get("stage") or ""
         resume_summary = (self.guided_resume_summary or "").strip()
@@ -153,12 +152,12 @@ class InterviewAgent:
 
 ## 开场要求
 请生成一段自然的续聊开场白：
-1. 用“{address}”称呼被采访者。
-2. 可以自然承接上次采访内容，但不要把摘要硬贴到句子里。
-3. 结尾要自然引出“当前受控采访要继续的问题”，保持采访按预设顺序推进。
-4. 语气像晚辈和长辈聊天，温暖、顺滑、口语化。
-5. 字数控制在 80 字左右。
-6. 只输出开场白本身。
+1. 以"你好呀，欢迎回来"等自然问候开始，不要在问候语前加被采访者姓名或称呼
+2. 可以自然承接上次采访内容，但不要把摘要硬贴到句子里
+3. 结尾要自然引出"当前受控采访要继续的问题"，保持采访按预设顺序推进
+4. 语气像晚辈和长辈聊天，温暖、顺滑、口语化
+5. 字数控制在 80 字左右
+6. 只输出开场白本身
 
 ## 上次摘要补充
 {resume_summary or "无"}
@@ -176,7 +175,7 @@ class InterviewAgent:
             logger.warning("Failed to generate guided resume opening: %s", e)
 
         return (
-            f"{address}，欢迎回来。上次聊到的内容我们先放在心里，"
+            f"你好呀，欢迎回来。上次聊到的内容我们都记着呢，"
             f"今天我们顺着之前的节奏慢慢接着聊：{guided_question_text}"
         )
     
@@ -434,7 +433,7 @@ class InterviewAgent:
             ending_message = ending_result.content if isinstance(ending_result.content, str) else str(ending_result.content)
 
         if not ending_message:
-            ending_message = f"{self.address_style or '您'}，今天和您聊天很愉快，谢谢您的分享！下次我们继续聊，祝您生活愉快！"
+            ending_message = "今天和您聊天很愉快，谢谢您的分享！下次我们继续聊，祝您生活愉快！"
 
         # 保存会话总结
         self.session_summary = ending_message

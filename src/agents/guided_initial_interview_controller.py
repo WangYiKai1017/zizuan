@@ -202,12 +202,23 @@ class GuidedInitialInterviewController:
         except Exception as e:
             logger.warning("Guided question generation failed for %s: %s", self.user_id, e)
             decision = {
-                "question": f"{address_style or '您'}能再多讲一点当时的细节吗？",
+                "question": "能再多讲一点当时的细节吗？",
                 "source": "generated",
                 "candidate_question_id": None,
                 "guided_question_completed": False,
                 "move_to_next_guided_question": False,
             }
+
+        if decision["guided_question_completed"] or decision["move_to_next_guided_question"]:
+            # Safety guard: if user explicitly asked to continue current topic, override the switch
+            if self._user_wants_to_continue(user_input):
+                decision["guided_question_completed"] = False
+                decision["move_to_next_guided_question"] = False
+                decision["topic_switched"] = False
+                logger.info(
+                    "User explicitly asked to continue topic; overriding guided_question_completed for %s",
+                    current_question["id"],
+                )
 
         if decision["guided_question_completed"] or decision["move_to_next_guided_question"]:
             state["completed_question_ids"] = self._append_unique(
@@ -316,7 +327,7 @@ class GuidedInitialInterviewController:
             return QuestionResult(
                 question=(
                     f"那我们先把这段放一放，接着往下聊聊。"
-                    f"{address_style or '您'}，{next_question['question']}"
+                    f"{next_question['question']}"
                 ),
                 source="generated",
                 candidate_question_id=None,
@@ -336,9 +347,8 @@ class GuidedInitialInterviewController:
         )
 
     def _free_interview_transition(self, address_style: str) -> str:
-        address = address_style or "您"
         return (
-            f"{address}，刚才这些回忆已经把人生几个重要阶段都串起来了。"
+            "刚才这些回忆已经把人生几个重要阶段都串起来了。"
             "接下来我们可以顺着您最想多讲的地方慢慢展开，您现在最想从哪段经历继续聊？"
         )
 
@@ -396,12 +406,33 @@ class GuidedInitialInterviewController:
 {address_style or '您'}
 
 ## 决策规则
-1. 如果用户已经给出当前预设问题的具体细节，可以自然过渡到下一个预设问题。
-2. 如果当前回答很笼统，并且追问次数还没有达到上限，可以温和地换个角度追问当前问题。
-3. 如果候选问题和用户刚才主动提到的内容强相关，可以把候选问题改写成当前话题下的一句追问；这种情况 source 必须是 candidate_question。
-4. 如果用户提到强情绪、亲人离世、疾病、创伤或重大转折，先接住并短暂追问，不要硬切题。
-5. 不要说“固定问题”“清单”“业务分析师”或“候选问题”。
-6. 输出的问题必须自然、口语化、亲切。
+
+**核心原则：默认行为是继续深挖当前问题，而不是切换到下一个预设问题。**
+
+### 什么时候继续追问（默认）
+- 用户给出了具体细节、故事片段或情感表达 → 必须追问，不要切换话题
+- 用户提到了具体的人物、地点、事件 → 围绕这些细节继续追问（当时的感受、具体场景、后来怎样了）
+- 用户回答中出现了新的线索或悬念 → 顺势追问
+- 追问次数尚未达到上限（{MAX_FOLLOWUPS_PER_GUIDED_QUESTION}次），且没有明确的结束信号 → 继续
+
+### 追问技巧
+- 从用户回答中挖掘一个具体点继续深入，不要笼统地换角度
+- 可以用"当时您心里是什么感觉？""那件事后来怎么样了？""您说的那个XXX，还记得当时的细节吗？"等方式追问
+- 追问要有温度，像晚辈真心好奇长辈的故事，而不是机械地重复"能再多说一点吗"
+
+### 什么时候可以切换到下一个预设问题（guided_question_completed = true）
+必须满足以下**至少一个**条件，才可以将 guided_question_completed 设为 true：
+1. 用户明确表示当前话题聊完了："就这些了"、"没什么了"、"差不多了"、"换个话题吧"
+2. 用户连续2次以上用很短的话回答（少于15个字），没有新细节
+3. 追问次数已达到上限（{MAX_FOLLOWUPS_PER_GUIDED_QUESTION}次）
+4. 用户回答中出现了与当前问题无关的全新话题，且当前问题已得到基本回应
+
+### 特别注意：用户主动要求继续时
+- 如果用户说"咱继续说说这个"、"再说一下XXX"、"别换话题"等，**必须遵从用户意愿，继续追问当前话题**
+- guided_question_completed 和 move_to_next_guided_question 必须都为 false
+
+5. 不要说"固定问题""清单""业务分析师"或"候选问题"
+6. 输出的问题必须自然、口语化、亲切，不要在问题开头加称呼前缀
 
 ## 输出格式
 只输出 JSON：
@@ -451,6 +482,21 @@ class GuidedInitialInterviewController:
             "topic_switched": bool(parsed.get("topic_switched", False)),
             "new_topic": parsed.get("new_topic"),
         }
+
+    @staticmethod
+    def _user_wants_to_continue(user_input: str) -> bool:
+        """Detect if the user explicitly asked to stay on the current topic."""
+        if not user_input:
+            return False
+        text = user_input.lower()
+        continue_signals = [
+            "继续说", "继续聊", "接着说", "接着聊",
+            "再说一下", "再说说", "再说一说",
+            "别换话题", "不要换", "不换话题",
+            "咱继续", "我们继续", "还想聊",
+            "还没说完", "没有说完", "没聊完",
+        ]
+        return any(signal in text for signal in continue_signals)
 
     def _append_unique(self, values: List[str], value: str) -> List[str]:
         result = list(values or [])
