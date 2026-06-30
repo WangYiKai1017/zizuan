@@ -56,13 +56,15 @@ def create_app() -> FastAPI:
     from src.service.routes.biography_writing import router as writing_router
     from src.service.routes.stories import router as stories_router
     from src.service.routes.files import router as files_router
-    
+    from src.service.routes.users import router as users_router
+
     app.include_router(interview_router, prefix="/api")
     app.include_router(kb_organizer_router, prefix="/api")
     app.include_router(outline_router, prefix="/api")
     app.include_router(writing_router, prefix="/api")
     app.include_router(stories_router, prefix="/api")
     app.include_router(files_router, prefix="/api")
+    app.include_router(users_router, prefix="/api")
     
     # Health check endpoint
     @app.get("/health")

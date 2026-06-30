@@ -1400,6 +1400,63 @@ function handleEvent(eventType, data) {
 
 ---
 
+## 十一、用户管理接口
+
+### 11.1 删除用户
+
+**DELETE** `/api/users/{user_id}`
+
+删除指定用户的所有数据，包括知识库目录（事件、故事、传记、图片等）和活跃会话。操作不可逆。
+
+**幂等设计**：用户不存在时返回 200，`status` 为 `not_found`。
+
+#### 路径参数
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `user_id` | string | 是 | 用户 ID，3-50 位字母数字下划线 |
+
+#### 请求体
+
+无
+
+#### 成功响应（用户存在并已删除）
+
+```json
+{
+  "status": "deleted",
+  "user_id": "user_12345",
+  "sessions_released": 1
+}
+```
+
+#### 成功响应（用户不存在）
+
+```json
+{
+  "status": "not_found",
+  "user_id": "user_12345",
+  "sessions_released": 0
+}
+```
+
+#### 响应字段
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `status` | string | `deleted`（已删除）或 `not_found`（用户不存在） |
+| `user_id` | string | 用户 ID |
+| `sessions_released` | integer | 被强制释放的活跃会话数（0、1 或 2） |
+
+#### 错误响应
+
+| HTTP 状态码 | 错误码 | 说明 |
+|------------|--------|------|
+| 422 | `INVALID_USER_ID` | `user_id` 格式不合法 |
+| 500 | `DELETE_FAILED` | 文件系统删除失败 |
+
+---
+
 ## 附录 A：接口总览
 
 | 方法 | 路径 | 类型 | 说明 |
@@ -1420,3 +1477,4 @@ function handleEvent(eventType, data) {
 | GET | `/api/files/{user_id}` | JSON | 列出文件目录 |
 | GET | `/api/files/{user_id}/{path}` | JSON | 获取文件内容 |
 | GET | `/api/files/{user_id}/tree` | JSON | 获取完整目录树 |
+| DELETE | `/api/users/{user_id}` | JSON | 删除用户及所有数据 |

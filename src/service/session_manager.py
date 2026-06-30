@@ -174,6 +174,24 @@ class SessionManager:
                 return False
             del self._sessions[user_id]
             return True
+
+    async def force_release_all(self, user_id: str) -> int:
+        """Force-release all sessions (exclusive + biography) for a user.
+
+        Used when deleting a user to ensure no orphaned session state remains.
+
+        Returns:
+            Number of sessions released (0, 1, or 2).
+        """
+        async with self._lock:
+            count = 0
+            if user_id in self._biography_sessions:
+                del self._biography_sessions[user_id]
+                count += 1
+            if user_id in self._sessions:
+                del self._sessions[user_id]
+                count += 1
+            return count
     
     async def get_interview_agent(self, user_id: str) -> Optional[Any]:
         """Get the stored interview agent instance for a user."""
