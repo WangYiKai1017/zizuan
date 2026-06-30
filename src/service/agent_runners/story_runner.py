@@ -86,24 +86,22 @@ class StoryRunner(BaseAgentRunner):
         story_id: str,
         kb_path: str,
     ) -> list[str]:
-        """Generate up to 4 illustration images in parallel. Returns list of relative paths."""
+        """Generate 1 four-panel composite illustration. Returns list with at most 1 path."""
         if not prompts:
             return []
+
+        prompt = prompts[0]  # single 4-panel composite prompt
+        filename = f"{story_id}_illust.png"
 
         with observe_step(
             "story_generation.generate_illustrations",
             as_type="tool",
-            input={"prompts": prompts, "story_id": story_id, "model": image_service.model},
-            metadata={"count": len(prompts)},
+            input={"prompt": prompt, "story_id": story_id, "model": image_service.model},
+            metadata={"count": 1},
         ) as observation:
-            tasks = []
-            for i, prompt in enumerate(prompts[:4], start=1):
-                filename = f"{story_id}_illust_{i:02d}.png"
-                tasks.append(self._generate_image(image_service, prompt, filename, kb_path))
+            path = await self._generate_image(image_service, prompt, filename, kb_path)
 
-            results = await asyncio.gather(*tasks)
-
-        paths = [path for path in results if path]
+        paths = [path] if path else []
         if observation is not None:
             observation.update(output={"illustration_paths": paths, "success_count": len(paths)})
         return paths

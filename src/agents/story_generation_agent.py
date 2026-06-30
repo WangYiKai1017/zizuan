@@ -353,10 +353,7 @@ JSON 格式：
   "body": "故事正文",
   "image_prompt": "English description for a cover illustration. Pencil sketch style, realistic shading, vintage newspaper illustration feel, warm nostalgic tone, soft textures. Describe the core scene or imagery of the story in under 100 words.",
   "illustration_prompts": [
-    "English description for illustration 1: a key scene or moment from the story. Pencil sketch style, realistic shading, vintage feel. Under 80 words.",
-    "English description for illustration 2: a different scene or emotional moment. Same style. Under 80 words.",
-    "English description for illustration 3: another distinct scene or detail. Same style. Under 80 words.",
-    "English description for illustration 4: a closing image or reflective moment. Same style. Under 80 words."
+    "English description for a single 4-panel illustration arranged in a 2x2 grid. Each panel depicts a different key scene or emotional moment from the story. Pencil sketch style, realistic shading, vintage newspaper illustration feel, warm nostalgic tone, soft textures. Describe all four panels and their arrangement in under 120 words."
   ]
 }}
 """
