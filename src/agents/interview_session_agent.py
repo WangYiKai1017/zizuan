@@ -201,12 +201,14 @@ class InterviewSessionAgent:
             self._candidates_passed = False
             logger.info(f"Loaded {len(self.initial_candidate_questions)} candidate questions from previous session")
 
-        # 3. 打包 resume 上下文
+        # 3. 打包 resume 上下文（包含上次对话原文，避免重复发问）
+        conversation_text = prev_context.get("conversation_text", "")
         resume_context = {
             "summary": prev_context.get("summary", ""),
             "unfinished_topics": prev_context.get("unfinished_topics", []),
             "current_topic": prev_context.get("current_topic"),
             "topic_history": prev_context.get("topic_history", []),
+            "conversation_text": conversation_text,
         }
 
         # 4. 初始化 InterviewAgent 并启动
@@ -314,6 +316,11 @@ class InterviewSessionAgent:
         summary_block = sections.get("本次采访摘要", "")
         if summary_block:
             result["summary"] = summary_block.strip()
+
+        # 本次对话记录（避免重启后 agent 围绕同一问题重复发问）
+        conversation_block = sections.get("本次对话记录", "")
+        if conversation_block:
+            result["conversation_text"] = conversation_block.strip()
 
         return result
     
@@ -524,6 +531,10 @@ class InterviewSessionAgent:
         summary = self._sanitize_archive_text(summary)
 
         # 构建 session_data 用于采访记录归档
+        # 把本轮对话原文也写入归档，避免重启后 agent 重复发问
+        conversation_text = self._format_conversation_for_archive(
+            self.interview_agent.conversation_history
+        )
         session_data = {
             "summary": summary,
             "events": [],
@@ -541,6 +552,7 @@ class InterviewSessionAgent:
             "structured_archive_status": "pending",
             "structured_archive_error": "",
             "structured_archive_failed_at": "",
+            "conversation_text": conversation_text,
         }
 
         self.structured_archive_result = {"status": "pending", "error": None}
@@ -646,6 +658,29 @@ class InterviewSessionAgent:
         text = text.replace("技术骨干", "钳工")
         text = text.replace("资深钳工", "钳工")
         return text.strip().rstrip("，,")
+
+    def _format_conversation_for_archive(self, conversation_history: list) -> str:
+        """将本轮对话原文格式化为可写入归档的 Markdown。
+
+        Returns:
+            形如 "用户: …\n助手: …\n…" 的文本，每段截取不超过 200 字。
+        """
+        if not conversation_history:
+            return ""
+        lines = []
+        for turn in conversation_history[-20:]:  # 最近 20 轮
+            role = turn.get("role", "")
+            content = str(turn.get("content", "")).strip()
+            if not content:
+                continue
+            content = self._sanitize_archive_text(content)
+            if len(content) > 200:
+                content = content[:200].rstrip() + "..."
+            if role == "user":
+                lines.append(f"用户: {content}")
+            elif role == "assistant":
+                lines.append(f"助手: {content}")
+        return "\n".join(lines)
     
     async def end_session(self) -> dict:
         """

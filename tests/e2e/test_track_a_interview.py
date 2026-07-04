@@ -937,7 +937,16 @@ def main(argv: list[str] | None = None) -> int:
                     f"got {end_again_body.get('status')!r}"
                 )
 
-        section("Restart Interview Uses Previous Summary")
+        section("Restart Interview Continues Same Guided Question")
+        # 1. Read guided state before restart
+        state_before = read_guided_state(user_kb)
+        current_qid_before = state_before.get("current_question_id")
+        followups_before = state_before.get("current_question_followup_count", 0)
+        completed_before = list(state_before.get("completed_question_ids", []))
+        info(f"Before restart: current={current_qid_before}, followup={followups_before}, "
+             f"completed=({len(completed_before)}) {completed_before}")
+
+        # 2. Restart — should resume from previous guided state
         restart_events, restart_session_id = consume_sse(
             "POST",
             f"{base_url}/api/interview/start",
@@ -950,8 +959,11 @@ def main(argv: list[str] | None = None) -> int:
             failures.append("restart start: no session_id captured")
         elif restart_session_id == session_id:
             failures.append(
-                f"restart start: expected a new session id after end, got original {restart_session_id!r}"
+                f"restart start: expected a new session id after end, "
+                f"got original {restart_session_id!r}"
             )
+
+        # 3. Verify session started in interview phase (not profile)
         restart_started = [e for e in restart_events if e[0] == "session_started"]
         if restart_started:
             restart_data = restart_started[0][1]
@@ -959,7 +971,14 @@ def main(argv: list[str] | None = None) -> int:
                 failures.append(
                     f"restart start: expected reused=false, got {restart_data.get('reused')!r}"
                 )
+            restart_phase = restart_data.get("phase", "")
+            info(f"restart phase = {restart_phase!r}")
+            if restart_phase != "interview":
+                failures.append(
+                    f"restart start: expected phase='interview', got {restart_phase!r}"
+                )
 
+        # 4. Verify opening uses previous summary
         restart_messages = [e[1] for e in restart_events if e[0] == "agent_message"]
         restart_opening = restart_messages[-1].get("message", "") if restart_messages else ""
         info(f"restart opening = {restart_opening!r}")
@@ -972,18 +991,66 @@ def main(argv: list[str] | None = None) -> int:
             )
         )
 
+        # 5. Read guided state after restart — same question, followup count preserved
+        state_after_start = read_guided_state(user_kb)
+        current_qid_after = state_after_start.get("current_question_id")
+        followups_after_start = state_after_start.get("current_question_followup_count", 0)
+        info(f"After restart start: current={current_qid_after}, followup={followups_after_start}")
+        if current_qid_after != current_qid_before:
+            failures.append(
+                f"restart: current question changed from {current_qid_before!r} "
+                f"to {current_qid_after!r} — should stay on same question"
+            )
+        if followups_after_start != followups_before:
+            failures.append(
+                f"restart: followup count changed from {followups_before} to "
+                f"{followups_after_start} — should be preserved across restart"
+            )
+
+        # 6. Send 2 more messages — followup count should accumulate further
+        restart_question = restart_opening
+        for restart_round in range(1, 3):
+            if not restart_question:
+                break
+            answer = generate_answer(answer_client, deepseek_model, restart_question)
+            info(f"restart round {restart_round}: answer = {answer[:80]}...")
+            interview_transcript.append(f"用户: {answer}")
+            msg_events, _ = consume_sse(
+                "POST",
+                f"{base_url}/api/interview/message",
+                json_body={
+                    "user_id": user_id,
+                    "session_id": restart_session_id,
+                    "message": answer,
+                },
+            )
+            next_msgs = [e[1] for e in msg_events if e[0] == "agent_message"]
+            restart_question = next_msgs[-1].get("message", "") if next_msgs else ""
+            if restart_question:
+                interview_transcript.append(f"助手: {restart_question}")
+
+        # 7. Verify followup count accumulated (not reset)
+        state_after_msgs = read_guided_state(user_kb)
+        followups_after_msgs = state_after_msgs.get("current_question_followup_count", 0)
+        info(f"After {2} restart messages: followup={followups_after_msgs}")
+        expected_min_followups = followups_before + 1
+        if followups_after_msgs < expected_min_followups:
+            failures.append(
+                f"restart: followup count after messages ({followups_after_msgs}) "
+                f"should be >= {expected_min_followups} (before={followups_before} + 1+)"
+            )
+
+        # 8. End restart session
         if restart_session_id:
             restart_end_response = requests.post(
                 f"{base_url}/api/interview/end",
                 json={"user_id": user_id, "session_id": restart_session_id},
                 timeout=args.request_timeout,
             )
-            info(f"POST /api/interview/end (restart session) -> HTTP {restart_end_response.status_code}")
-            info(f"body = {restart_end_response.text[:500]}")
+            info(f"POST /api/interview/end (restart) -> HTTP {restart_end_response.status_code}")
             if restart_end_response.status_code != 200:
                 failures.append(
-                    "restart end: expected 200 when closing restart session, "
-                    f"got {restart_end_response.status_code}"
+                    f"restart end: expected 200, got {restart_end_response.status_code}"
                 )
 
         section("Inject Events for Story Generation")

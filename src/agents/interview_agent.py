@@ -73,6 +73,8 @@ class InterviewAgent:
         self.address_style = "您"
         # Resume 上下文（老用户回来时由 InterviewSessionAgent 传入）
         self.resume_context = resume_context or {}
+        # 上次对话记录原文（避免 agent 围绕同一问题重复发问）
+        self.resume_conversation_text = self.resume_context.get("conversation_text", "")
 
         # 话题追踪（老用户从 resume_context 恢复，新用户从零开始）
         resume_topic_history = self.resume_context.get("topic_history") or []
@@ -120,9 +122,19 @@ class InterviewAgent:
         """
         ctx = self.resume_context or {}
         summary = (ctx.get("summary") or "").strip()
+        conversation_text = (ctx.get("conversation_text") or "").strip()
 
         guided_text = guided_question.get("question", "")
         guided_stage = guided_question.get("stage_label") or guided_question.get("stage") or ""
+
+        # 上次对话记录段（避免重复发问）
+        prev_conv_section = ""
+        if conversation_text:
+            prev_conv_section = f"""## 上次围绕同一问题的对话记录
+以下是上次 session 中已经聊过的内容，请避免重复问同样的问题：
+{conversation_text}
+
+"""
 
         prompt = f"""## 角色定义
 你是一位温暖、体贴的采访记者，正在帮助一位老人回忆并记录人生故事。
@@ -131,14 +143,15 @@ class InterviewAgent:
 ## 上次采访摘要
 {summary[:200] or '无'}
 
-## 当前要继续的引导问题
+{prev_conv_section}## 当前要继续的引导问题
 - 阶段：{guided_stage}
 - 问题：{guided_text}
 
 ## 内容使用规则
 - "上次采访摘要"是判断上次聊了什么的最高优先级依据
+- "上次对话记录"里的内容说明用户已经聊过这些细节，请不要生成重复的问题
 - 如果摘要为空或过于泛泛，不要编造具体故事，只做温和欢迎
-- 结尾自然引出"当前要继续的引导问题"
+- 结尾自然引出"当前要继续的引导问题"，但不要原样重复引导问题原文
 
 ## 输出要求
 1. 以"你好呀，欢迎回来"开头
@@ -243,8 +256,11 @@ class InterviewAgent:
                 conversation_history=self.conversation_history,
                 candidate_questions=candidate_questions,
                 address_style=self.address_style,
+                previous_conversation_text=self.resume_conversation_text,
             )
             result = decision.result
+            # 仅首轮注入，之后清空避免后续轮次重复注入
+            self.resume_conversation_text = ""
         else:
             # 6. 生成下一个问题
             result = await self.question_generator.generate_next(

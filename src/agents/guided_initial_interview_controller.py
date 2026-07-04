@@ -119,6 +119,7 @@ class GuidedInitialInterviewController:
         conversation_history: Optional[List[Dict]] = None,
         candidate_questions: Optional[List[Dict[str, str]]] = None,
         address_style: str = "您",
+        previous_conversation_text: str = "",
     ) -> GuidedDecision:
         """Generate the next guided question and update persisted progress."""
         state = self.ensure_state()
@@ -184,6 +185,7 @@ class GuidedInitialInterviewController:
             current_question=current_question,
             candidate_questions=candidate_questions,
             address_style=address_style,
+            previous_conversation_text=previous_conversation_text,
         )
 
         try:
@@ -356,6 +358,7 @@ class GuidedInitialInterviewController:
         current_question: Dict[str, str],
         candidate_questions: Optional[List[Dict[str, str]]],
         address_style: str,
+        previous_conversation_text: str = "",
     ) -> str:
         candidate_questions_formatted = "无"
         if candidate_questions:
@@ -375,6 +378,15 @@ class GuidedInitialInterviewController:
         current_focus = current_question.get("focus") or "无"
         current_stage_label = current_question.get("stage_label") or current_question["stage"]
 
+        # 上次对话记录（避免 agent 围绕同一问题重复发问）
+        prev_conv_section = ""
+        if previous_conversation_text:
+            prev_conv_section = f"""## 上次围绕同一问题的对话记录
+以下是上次 session 中围绕当前问题已经聊过的内容，请避免重复问同样的问题：
+{previous_conversation_text}
+
+"""
+
         return f"""## 任务
 你正在执行初期受控采访。请只围绕当前预设问题做判断，不要自由发散太远。
 
@@ -386,7 +398,7 @@ class GuidedInitialInterviewController:
 - 当前问题已追问次数: {state.get('current_question_followup_count', 0)}
 - 每个预设问题最多追问次数: {MAX_FOLLOWUPS_PER_GUIDED_QUESTION}
 
-## 用户刚才的回答
+{prev_conv_section}## 用户刚才的回答
 {user_input}
 
 ## 记忆上下文

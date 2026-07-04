@@ -859,6 +859,7 @@ class MarkdownFileManager:
         structured_status = session_data.get("structured_archive_status", "unknown")
         structured_error = session_data.get("structured_archive_error", "")
         structured_failed_at = session_data.get("structured_archive_failed_at", "")
+        conversation_text = session_data.get("conversation_text", "")
 
         # Format lists
         events_list = "\n".join(f"- {e}" for e in events) if events else "（无）"
@@ -889,6 +890,9 @@ class MarkdownFileManager:
 
 ## 本次采访摘要
 {summary}
+
+## 本次对话记录
+{conversation_text or '（无）'}
 
 ## 结构化归档状态
 {structured_section}
