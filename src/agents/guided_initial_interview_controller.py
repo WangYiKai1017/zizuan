@@ -90,11 +90,7 @@ class GuidedInitialInterviewController:
     def is_active(self) -> bool:
         return not self.is_completed()
 
-    def build_start_message(
-        self,
-        address_style: str = "您",
-        resume_summary: str | None = None,
-    ) -> Optional[str]:
+    def build_start_message(self) -> Optional[str]:
         """Return a deterministic opening for the current guided question."""
         question = self.current_start_question()
         if not question:
@@ -401,9 +397,6 @@ class GuidedInitialInterviewController:
 
 ## 后续预设问题顺序参考
 {remaining_formatted or '无'}
-
-## 对被采访者的称呼
-{address_style or '您'}
 
 ## 决策规则
 

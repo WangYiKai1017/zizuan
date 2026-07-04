@@ -18,26 +18,26 @@ class TestInterviewAgentFixes(unittest.TestCase):
     
     def test_start_method_unified_initialization(self):
         """测试start()方法的统一初始化逻辑"""
-        # 创建没有resume_prompt的Agent
+        # 创建没有resume_context的Agent（新用户）
         agent = InterviewAgent(user_id=self.user_id, llm_service=self.llm_service)
-        
-        # 确保resume_prompt为空
-        self.assertIsNone(agent.resume_prompt)
-        
+
+        # 确保resume_context为空
+        self.assertEqual(agent.resume_context, {})
+
         # 运行start方法
         opening = asyncio.run(agent.start())
-        
+
         # 验证返回结果
         self.assertIsInstance(opening, str)
         self.assertGreater(len(opening), 0)
-        
-        # 创建有resume_prompt的Agent
-        custom_prompt = "你好，很高兴再次和你聊天！"
-        agent2 = InterviewAgent(user_id=self.user_id, llm_service=self.llm_service, resume_prompt=custom_prompt)
-        
+
+        # 创建有resume_context的Agent（老用户）
+        custom_context = {"summary": "上次聊了童年的事"}
+        agent2 = InterviewAgent(user_id=self.user_id, llm_service=self.llm_service, resume_context=custom_context)
+
         # 运行start方法
         opening2 = asyncio.run(agent2.start())
-        
+
         # 验证返回结果
         self.assertIsInstance(opening2, str)
         self.assertGreater(len(opening2), 0)

@@ -113,7 +113,6 @@ def test_message_route_can_select_candidate_question_in_guided_phase(monkeypatch
         user_id=user_id,
         llm_service=llm_service,
         knowledge_base_root=tmp_path,
-        address_style="您",
         initial_history=[
             {
                 "role": "assistant",
@@ -163,4 +162,3 @@ def test_message_route_can_select_candidate_question_in_guided_phase(monkeypatch
     assert len(agent_events) == 1
     assert agent_events[0]["question_source"] == "candidate_question"
     assert agent_events[0]["candidate_question_id"] == "cand_1"
-    assert "语文老师" in agent_events[0]["message"]

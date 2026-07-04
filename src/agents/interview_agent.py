@@ -3,6 +3,7 @@ from datetime import datetime
 from pathlib import Path
 import logging
 import json
+import re
 
 from src.agents.guided_initial_interview_controller import GuidedInitialInterviewController
 from src.services.llm_service import LLMService, get_llm_service
@@ -39,11 +40,9 @@ class InterviewAgent:
         cache_tool: MemoryCacheTool = None,
         query_tool: KnowledgeQueryTool = None,
         archive_tool: MemoryArchiveTool = None,
-        resume_prompt: str = None,
         initial_history: List[Dict] = None,
-        address_style: str = "您",
         knowledge_base_root: str | Path | None = None,
-        guided_resume_summary: str | None = None,
+        resume_context: dict | None = None,
         guided_controller: GuidedInitialInterviewController = None,
     ):
         self.user_id = user_id
@@ -54,34 +53,35 @@ class InterviewAgent:
             from src.storage.markdown_file_manager import MarkdownFileManager
             from src.storage.memory_repository import MemoryRepository
             self.memory_manager = MemoryManager(repository=MemoryRepository(file_manager=MarkdownFileManager()))
-        
+
         # 工具
         self.cache_tool = cache_tool or MemoryCacheTool()
         self.query_tool = query_tool or KnowledgeQueryTool()
         self.archive_tool = archive_tool or MemoryArchiveTool()
-        
+
         # 会话状态
         self.session_state: Optional[SessionState] = None
         self.conversation_history = initial_history or []
         self.session_summary = ""
         self.is_completed = False
-        
-        # 继续对话Prompt
-        self.resume_prompt = resume_prompt
-
-        # 对被采访者的称呼方式（如"张爷爷"、"李叔叔"、"您"）
-        self.address_style: str = address_style or "您"
 
         self.knowledge_base_root = Path(knowledge_base_root) if knowledge_base_root else (
             Path(__file__).resolve().parent.parent.parent / "knowledge_base"
         )
-        self.guided_resume_summary = guided_resume_summary
-        
-        # 话题追踪
-        self.current_topic: Optional[str] = None
+
+        # 称呼方式（后续 Task 4 中全局清理）
+        self.address_style = "您"
+        # Resume 上下文（老用户回来时由 InterviewSessionAgent 传入）
+        self.resume_context = resume_context or {}
+
+        # 话题追踪（老用户从 resume_context 恢复，新用户从零开始）
+        resume_topic_history = self.resume_context.get("topic_history") or []
+        resume_current_topic = self.resume_context.get("current_topic")
+
+        self.current_topic: Optional[str] = resume_current_topic
         self.topic_turn_count: int = 0
         self.topic_max_turns: int = 8  # switch after 8 turns on same topic
-        self.topic_history: list[str] = []  # track previous topics to avoid repeating
+        self.topic_history: list[str] = list(resume_topic_history)  # track previous topics to avoid repeating
         
         # 问题生成器
         self.question_generator = QuestionGenerator(llm_service)
@@ -94,91 +94,76 @@ class InterviewAgent:
     async def start(self) -> str:
         """
         启动采访流程
-        
-        实现统一初始化逻辑，不再区分新旧用户
-        如果有resume_prompt，使用它生成开场白
-        否则，使用标准开场模板生成开场白
+
+        老用户 (resume_context 存在) → LLM 生成欢迎回来的开场白
+        新用户 (resume_context 不存在) → 模板开场白
         """
         guided_question = self.guided_controller.current_start_question()
-        if guided_question and self.resume_prompt:
-            guided_opening = await self._generate_guided_resume_opening(guided_question)
+
+        if self.resume_context and guided_question:
+            # 老用户回来 → 轻量 LLM 开场白
+            opening = await self._build_resume_opening(guided_question)
+        elif guided_question:
+            # 新用户（profile 完成后）→ 模板开场白
+            opening = self.guided_controller.build_start_message()
         else:
-            guided_opening = self.guided_controller.build_start_message(
-                address_style=self.address_style,
-            )
-        if guided_opening:
-            self._record_turn("assistant", guided_opening)
-            return guided_opening
+            # 引导阶段已完成 → 通用欢迎语
+            opening = "你好呀，欢迎回来！今天想从哪里接着聊呢？"
 
-        if not self.resume_prompt:
-            # 没有resume_prompt时，使用标准开场模板
-            self.resume_prompt = """## 角色定义
-你是一位温暖、体贴的采访记者，正在帮助一位老人回忆并记录人生故事。
-
-## 任务
-请用亲切自然的语气，以晚辈聊天的方式，生成一段简短的开场白，引导老人开始讲述他的人生故事。
-
-要求：
-1. 语气亲切，像和家人聊天一样
-2. 简洁明了，不要太正式
-3. 邀请老人开始讲述他的人生经历
-4. 字数控制在50字左右
-"""
-        
-        # 生成开场白
-        opening = await self.llm_service.invoke(
-            prompt=self.resume_prompt,
-            temperature=0.7,
-            trace_node="start",
-        )
-        opening = opening.content
-        
-        # 记录对话
         self._record_turn("assistant", opening)
-        
         return opening
 
-    async def _generate_guided_resume_opening(self, guided_question: Dict[str, str]) -> str:
-        """Generate a natural resume opening while preserving the current guided question."""
-        guided_question_text = guided_question.get("question", "")
+    async def _build_resume_opening(self, guided_question: dict) -> str:
+        """为老用户生成欢迎回来的开场白。
+
+        只使用上次采访摘要 + 当前引导问题，一次 LLM 调用。
+        """
+        ctx = self.resume_context or {}
+        summary = (ctx.get("summary") or "").strip()
+
+        guided_text = guided_question.get("question", "")
         guided_stage = guided_question.get("stage_label") or guided_question.get("stage") or ""
-        resume_summary = (self.guided_resume_summary or "").strip()
 
-        prompt = f"""{self.resume_prompt}
+        prompt = f"""## 角色定义
+你是一位温暖、体贴的采访记者，正在帮助一位老人回忆并记录人生故事。
+用户之前已经有过对话，现在需要你生成一段欢迎回来的开场白。
 
-## 当前受控采访要继续的问题
+## 上次采访摘要
+{summary[:200] or '无'}
+
+## 当前要继续的引导问题
 - 阶段：{guided_stage}
-- 问题：{guided_question_text}
+- 问题：{guided_text}
 
-## 开场要求
-请生成一段自然的续聊开场白：
-1. 以"你好呀，欢迎回来"等自然问候开始，不要在问候语前加被采访者姓名或称呼
-2. 可以自然承接上次采访内容，但不要把摘要硬贴到句子里
-3. 结尾要自然引出"当前受控采访要继续的问题"，保持采访按预设顺序推进
-4. 语气像晚辈和长辈聊天，温暖、顺滑、口语化
-5. 字数控制在 80 字左右
-6. 只输出开场白本身
+## 内容使用规则
+- "上次采访摘要"是判断上次聊了什么的最高优先级依据
+- 如果摘要为空或过于泛泛，不要编造具体故事，只做温和欢迎
+- 结尾自然引出"当前要继续的引导问题"
 
-## 上次摘要补充
-{resume_summary or "无"}
-"""
+## 输出要求
+1. 以"你好呀，欢迎回来"开头
+2. 简要回顾上次摘要（1-2 句，不得编造）
+3. 最后引出当前引导问题
+4. 语气温暖、亲切，像老朋友聊天，80 字左右
+5. 只输出开场白本身"""
+
         try:
-            opening = await self.llm_service.invoke(
+            result = await self.llm_service.invoke(
                 prompt=prompt,
                 temperature=0.7,
                 trace_node="start.guided_resume",
             )
-            text = str(opening.content).strip()
+            text = str(result.content).strip()
             if text:
                 return text
         except Exception as e:
-            logger.warning("Failed to generate guided resume opening: %s", e)
+            logger.warning("Failed to generate resume opening: %s", e)
 
         return (
             f"你好呀，欢迎回来。上次聊到的内容我们都记着呢，"
-            f"今天我们顺着之前的节奏慢慢接着聊：{guided_question_text}"
+            f"今天我们顺着之前的节奏慢慢接着聊：{guided_text}"
         )
-    
+
     async def handle_input(
         self,
         user_input: str,
@@ -416,17 +401,20 @@ class InterviewAgent:
             trace_node="ending.generate_summary",
         )
 
-        # 解析 JSON 响应，提取 title 和 message
+        # 解析 JSON 响应，提取 title、summary 和 message。
         title = ""
+        summary = ""
         ending_message = ""
         try:
             content = ending_result.content
             if isinstance(content, dict):
                 title = str(content.get("title", "")).strip()
+                summary = str(content.get("summary", "")).strip()
                 ending_message = str(content.get("message", "")).strip()
             else:
                 parsed = json.loads(content)
                 title = str(parsed.get("title", "")).strip()
+                summary = str(parsed.get("summary", "")).strip()
                 ending_message = str(parsed.get("message", "")).strip()
         except (json.JSONDecodeError, TypeError) as e:
             logger.warning(f"Failed to parse ending JSON, falling back to raw content: {e}")
@@ -435,8 +423,8 @@ class InterviewAgent:
         if not ending_message:
             ending_message = "今天和您聊天很愉快，谢谢您的分享！下次我们继续聊，祝您生活愉快！"
 
-        # 保存会话总结
-        self.session_summary = ending_message
+        # 保存会话事实摘要，供结构化归档和下次恢复使用。
+        self.session_summary = summary
 
         # --- Generate next-session questions via a second LLM call ---
         next_questions = await self._generate_next_session_questions()
@@ -445,7 +433,7 @@ class InterviewAgent:
             "title": title,
             "message": ending_message,
             "next_questions": next_questions,
-            "summary": ending_message,
+            "summary": summary,
         }
 
     async def _generate_next_session_questions(self) -> list:

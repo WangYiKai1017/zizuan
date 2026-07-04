@@ -170,23 +170,14 @@ class InterviewSessionAgent:
     async def _resume_session(self) -> str:
         """
         恢复会话（老用户）
-        
+
         流程：
-        1. 加载历史对话记录
-        2. 加载最近一次的 session 归档作为上下文
-        3. 分析需要的知识库信息
-        4. 执行知识库查询
-        5. 生成继续对话的Prompt（携带上次 session 上下文）
-        6. 进入采访流程，并把上次准备好的问题作为候选注入首轮
+        1. 加载最近一次的 session 归档作为上下文
+        2. 初始化 InterviewAgent 并生成欢迎回来的开场白
         """
         self.has_profile = True
 
-        # 0. 读取user.md计算称呼方式（user.md 不存在时使用默认 "您"）
-        profile_info = self._parse_user_md(self.user_id)
-        self.address_style = self._compute_address_style(profile_info)
-        logger.info(f"Computed address_style for resumed session: {self.address_style}")
-
-        # 0.1 查找并解析最新的 session 归档
+        # 1. 查找并解析最新的 session 归档
         prev_context: dict = {}
         sessions_dir = self.knowledge_base_path / "sessions"
         if sessions_dir.exists() and sessions_dir.is_dir():
@@ -200,7 +191,7 @@ class InterviewSessionAgent:
         else:
             logger.info(f"Sessions directory not found: {sessions_dir}")
 
-        # 0.2 上次准备好的问题 → 转为候选问题格式，注入首轮 handle_input
+        # 2. 上次准备好的问题 → 转为候选问题格式，注入首轮 handle_input
         next_questions = prev_context.get("next_questions", []) or []
         if next_questions:
             self.initial_candidate_questions = [
@@ -210,50 +201,15 @@ class InterviewSessionAgent:
             self._candidates_passed = False
             logger.info(f"Loaded {len(self.initial_candidate_questions)} candidate questions from previous session")
 
-        # 1. 从知识库中读取最新的对话记录
-        history = await self.memory_manager.repository.get_latest_conversation_records(self.user_id, 5)
-        self.conversation_history = history
-        
-        # 2. 分析需要的知识库信息
-        query_prompt = self._build_resume_analysis_prompt(history)
-        analysis_result = await self.llm_service.invoke(
-            prompt=query_prompt,
-            temperature=0.3,
-            trace_node="resume.analyze_needed_knowledge",
-        )
-        analysis_result = analysis_result.content
-        
-        # 3. 执行知识库查询（避免重复查询）
-        query_hash = hash(analysis_result)
-        if query_hash in self.current_round_queries:
-            logger.info(f"重复查询请求，已跳过：{analysis_result[:50]}...")
-            knowledge_context = ""
-        else:
-            with observe_step(
-                "resume.kb_query",
-                as_type="tool",
-                input={"query": analysis_result},
-            ):
-                knowledge_context = await self.query_tool.query(
-                    user_id=self.user_id,
-                    query=analysis_result,
-                )
-            self.current_round_queries.add(query_hash)  # 记录已查询的请求
-        
-        # 4. 缓存知识库查询结果
-        self.cache_tool.append_cache(
-            session_id=self.user_id,
-            content=knowledge_context
-        )
-        
-        # 5. 生成继续对话的Prompt（包含上次 session 上下文）
-        resume_prompt = self._build_resume_dialogue_prompt(
-            history=history,
-            knowledge_context=knowledge_context,
-            prev_context=prev_context,
-        )
-        
-        # 6. 初始化InterviewAgent并启动
+        # 3. 打包 resume 上下文
+        resume_context = {
+            "summary": prev_context.get("summary", ""),
+            "unfinished_topics": prev_context.get("unfinished_topics", []),
+            "current_topic": prev_context.get("current_topic"),
+            "topic_history": prev_context.get("topic_history", []),
+        }
+
+        # 4. 初始化 InterviewAgent 并启动
         self.interview_agent = InterviewAgent(
             user_id=self.user_id,
             llm_service=self.llm_service,
@@ -261,20 +217,9 @@ class InterviewSessionAgent:
             cache_tool=self.cache_tool,
             query_tool=self.query_tool,
             archive_tool=self.archive_tool,
-            resume_prompt=resume_prompt,
-            initial_history=history,
-            address_style=self.address_style,
             knowledge_base_root=self.knowledge_base_root,
-            guided_resume_summary=prev_context.get("summary"),
+            resume_context=resume_context,
         )
-
-        # 6.1 将上次的话题历史与当前话题方向注入 InterviewAgent
-        prev_topic_history = prev_context.get("topic_history", []) or []
-        if prev_topic_history:
-            self.interview_agent.topic_history = list(prev_topic_history)
-        prev_current_topic = prev_context.get("current_topic")
-        if prev_current_topic:
-            self.interview_agent.current_topic = prev_current_topic
 
         self.phase = SessionPhase.INTERVIEW
         return await self.interview_agent.start()
@@ -493,7 +438,6 @@ class InterviewSessionAgent:
             query_tool=self.query_tool,
             archive_tool=self.archive_tool,
             initial_history=profile_history,
-            address_style=self.address_style,
             knowledge_base_root=self.knowledge_base_root,
         )
         self.interview_agent.guided_controller.ensure_state()
@@ -747,120 +691,6 @@ class InterviewSessionAgent:
         self.phase = SessionPhase.CLOSED
         return {"message": "今天的采访就到这里啦，非常感谢您的分享。期待下次再聊！", "title": ""}
     
-    def _build_resume_analysis_prompt(self, history: list) -> str:
-        """
-        构建历史对话分析Prompt
-        
-        目标：让大模型分析之前的对话记录，判断需要获取哪些知识库信息
-        """
-        history_text = self._format_history(history)
-        
-        prompt = f"""## 任务说明
-
-你是一位采访助手，正在分析老人的历史对话记录。
-你的任务是根据之前的对话内容，判断需要从知识库中查询哪些信息来继续本次对话。
-
-## 历史对话记录
-
-{history_text}
-
-## 分析要求
-
-请分析以下内容：
-1. 上次对话停在了什么话题？
-2. 有哪些未展开的重要事件或人物？
-3. 用户提到过但未详细讨论的内容？
-4. 需要补充哪些背景信息？
-
-## 输出格式
-
-请直接输出一个知识库查询语句，用于检索相关信息。例如：
-- "童年时期的家庭生活和学校经历"
-- "在工厂工作期间的重要事件和同事关系"
-- "子女成长过程中的重要时刻"
-
-注意：只输出一个查询语句，不要其他解释。"""
-        return prompt
-    
-    def _build_resume_dialogue_prompt(
-        self,
-        history: list,
-        knowledge_context: str,
-        prev_context: Optional[dict] = None,
-    ) -> str:
-        """
-        构建继续对话的Prompt
-        
-        目标：总结上次对话，结合知识库内容与上次 session 归档，生成开场白
-        """
-        history_text = self._format_history(history)
-        prev_context = prev_context or {}
-
-        prev_summary = (prev_context.get("summary") or "").strip()
-        unfinished_topics = prev_context.get("unfinished_topics") or []
-        prev_current_topic = prev_context.get("current_topic") or ""
-        topic_history = prev_context.get("topic_history") or []
-
-        # 裁剪过长的摘要
-        summary_snippet = prev_summary[:200] if prev_summary else ""
-        unfinished_str = "、".join(unfinished_topics[:5]) if unfinished_topics else ""
-        topic_history_str = "、".join(topic_history[:8]) if topic_history else ""
-
-        prev_section = ""
-        if prev_summary or unfinished_topics or prev_current_topic or topic_history:
-            prev_section = f"""## 上次采访上下文
-
-- 上次采访摘要：{summary_snippet or '（无）'}
-- 上次未聊完的话题：{unfinished_str or '（无）'}
-- 上次话题方向：{prev_current_topic or '（无）'}
-- 已探索的话题：{topic_history_str or '（无）'}
-
-"""
-
-        address = self.address_style or "您"
-
-        prompt = f"""## 任务说明
-
-你是一位温暖、专业的采访记者，正在采访一位老人撰写自传。
-用户之前已经有过对话，现在需要你根据历史记录、知识库内容及上次 session 上下文，生成一段欢迎回来的开场白。
-
-## 被采访者称呼
-
-{address}
-
-## 上次对话记录
-
-{history_text}
-
-{prev_section}## 知识库查询结果
-
-{knowledge_context}
-
-## 输出要求
-
-请生成一段开场白，要求：
-1. 以”你好呀，欢迎回来”等自然问候开始，不要在问候语前加被采访者姓名或称呼
-2. 简要回顾上次聊到的主要内容或摘要（1-2句话）
-3. 如果有未聊完的话题，可以提及并试探是否愿意继续
-4. 最后提出一个轻柔、开放的问题让老人选择今天从哪里开始
-5. 语气温暖、亲切，像老朋友聊天一样，字数控制在 80字左右
-6. 后续对话中可以用”{address}”自然地称呼被采访者，但开场白不需要以称呼开头
-
-## 示例
-
-“你好呀，欢迎回来！上回咱们聊到您在部队服役的那段日子，听得我都入迷了。上次还有些话题没聊完，今天您想从哪里接着讲呢？”
-
-请生成开场白：
-"""
-        return prompt
-    
-    def _format_history(self, history: list) -> str:
-        """格式化历史对话记录"""
-        lines = []
-        for turn in history[-10:]:  # 只取最近10轮
-            lines.append(f"用户: {turn.get('content', '')}")
-        return "\n".join(lines)
-
     def _parse_user_md(self, user_id: str) -> dict:
         """读取并解析 user.md。
 
