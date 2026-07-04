@@ -278,6 +278,231 @@ def consume_sse(
     return events, session_id
 
 
+def extract_markdown_section(content: str, heading: str) -> str:
+    """Extract a second-level markdown section by heading text."""
+    target = f"## {heading}"
+    lines = content.splitlines()
+    start: int | None = None
+    for idx, line in enumerate(lines):
+        if line.strip() == target:
+            start = idx + 1
+            break
+    if start is None:
+        return ""
+
+    section_lines: list[str] = []
+    for line in lines[start:]:
+        if line.startswith("## "):
+            break
+        section_lines.append(line)
+    return "\n".join(section_lines).strip()
+
+
+def extract_json_object(text: str) -> dict[str, Any]:
+    """Parse a JSON object from a judge response that may include markdown fences."""
+    raw = text.strip()
+    fence = chr(96) * 3
+    if raw.startswith(fence):
+        raw = raw.split(fence, 2)[1]
+        if raw.lstrip().startswith("json"):
+            raw = raw.lstrip()[4:]
+    start = raw.find("{")
+    end = raw.rfind("}")
+    if start >= 0 and end >= start:
+        raw = raw[start : end + 1]
+    return json.loads(raw)
+
+
+def judge_session_summary(
+    client: openai.OpenAI,
+    model: str,
+    *,
+    transcript: str,
+    summary_text: str,
+) -> dict[str, Any]:
+    """Use an LLM judge for non-trivial summary quality checks."""
+    prompt = f"""你是一个严格的采访质检员。请判断“本次采访摘要”是否适合作为下一次开场时回顾“上次聊了什么”的依据。
+
+评分标准：
+1. 摘要必须具体概括本轮真实聊天内容，包含至少一个具体故事、人物、地点、场景或事件。
+2. 摘要必须能从对话记录中得到支持，不能引入对话里没有的旧知识库内容。
+3. 摘要不能只是结束寒暄，例如“今天聊得很愉快”“谢谢分享”“下次继续聊”“祝生活愉快”。
+4. 摘要可以简短，但必须足够让下次开场准确承接。
+
+请只输出 JSON：
+{{
+  "pass": true 或 false,
+  "score": 0到1之间的小数,
+  "reason": "一句话说明",
+  "grounded_topics": ["摘要中被对话支持的具体主题"]
+}}
+
+【对话记录】
+{transcript}
+
+【本次采访摘要】
+{summary_text}
+"""
+    response = client.chat.completions.create(
+        model=model,
+        max_tokens=400,
+        temperature=0,
+        messages=[
+            {"role": "system", "content": "你只输出合法 JSON，不输出任何额外解释。"},
+            {"role": "user", "content": prompt},
+        ],
+    )
+    content = response.choices[0].message.content or "{}"
+    return extract_json_object(content)
+
+
+def read_latest_session_summary(user_kb: Path) -> tuple[Path | None, str]:
+    """Return latest session archive path and its factual summary section."""
+    session_files = sorted((user_kb / "sessions").glob("session_*.md"))
+    if not session_files:
+        return None, ""
+
+    latest_session = session_files[-1]
+    content = latest_session.read_text(encoding="utf-8")
+    return latest_session, extract_markdown_section(content, "本次采访摘要")
+
+
+def verify_session_summary_with_llm_judge(
+    user_kb: Path,
+    client: openai.OpenAI,
+    model: str,
+    transcript: list[str],
+) -> list[str]:
+    """Verify latest session summary quality using an LLM-as-judge check."""
+    failures: list[str] = []
+    latest_session, summary_text = read_latest_session_summary(user_kb)
+    if latest_session is None:
+        return ["session_summary_judge: no session archive files found"]
+
+    info(f"session_summary_judge: latest session = {latest_session}")
+    info(f"session_summary_judge: summary = {summary_text!r}")
+
+    if not summary_text:
+        return ["session_summary_judge: latest session summary is empty"]
+
+    generic_terms = ["聊天很愉快", "谢谢您的分享", "感谢您的分享", "下次继续聊", "祝您生活愉快"]
+    compact_summary = "".join(summary_text.split())
+    if any(term in compact_summary for term in generic_terms) and len(compact_summary) < 80:
+        failures.append(
+            "session_summary_judge: summary looks like a generic closing pleasantry before LLM judge"
+        )
+
+    transcript_text = "\n".join(transcript[-24:])
+    if not transcript_text.strip():
+        return failures + ["session_summary_judge: transcript is empty"]
+
+    try:
+        verdict = judge_session_summary(
+            client,
+            model,
+            transcript=transcript_text,
+            summary_text=summary_text,
+        )
+    except Exception as exc:
+        return failures + [f"session_summary_judge: judge call failed: {exc}"]
+
+    info(f"session_summary_judge verdict = {json.dumps(verdict, ensure_ascii=False)}")
+    passed = verdict.get("pass") is True
+    try:
+        score = float(verdict.get("score", 0))
+    except (TypeError, ValueError):
+        score = 0.0
+    if not passed or score < 0.75:
+        failures.append(
+            "session_summary_judge: summary failed LLM judge "
+            f"(pass={verdict.get('pass')!r}, score={score}, reason={verdict.get('reason')!r})"
+        )
+
+    return failures
+
+
+def judge_restart_opening(
+    client: openai.OpenAI,
+    model: str,
+    *,
+    previous_summary: str,
+    opening_message: str,
+) -> dict[str, Any]:
+    """Use an LLM judge to verify restart opening is grounded in latest session summary."""
+    prompt = f"""你是一个严格的采访质检员。请判断第二次 /start 的开场白是否正确使用了“上一次 session 的摘要”。
+
+评分标准：
+1. 开场白必须自然承接上次摘要中的至少一个具体事实、主题或场景。
+2. 开场白不能把摘要里没有的旧知识库内容说成“上次聊到”。
+3. 开场白可以继续引出新的采访问题，但不能脱离上次摘要。
+4. 如果开场白只是泛泛欢迎，或者提到与摘要无关的故事，应判失败。
+
+请只输出 JSON：
+{{
+  "pass": true 或 false,
+  "score": 0到1之间的小数,
+  "reason": "一句话说明",
+  "summary_topics_used": ["开场白中实际使用的摘要主题"]
+}}
+
+【上一次 session 摘要】
+{previous_summary}
+
+【第二次 /start 开场白】
+{opening_message}
+"""
+    response = client.chat.completions.create(
+        model=model,
+        max_tokens=400,
+        temperature=0,
+        messages=[
+            {"role": "system", "content": "你只输出合法 JSON，不输出任何额外解释。"},
+            {"role": "user", "content": prompt},
+        ],
+    )
+    content = response.choices[0].message.content or "{}"
+    return extract_json_object(content)
+
+
+def verify_restart_opening_with_llm_judge(
+    client: openai.OpenAI,
+    model: str,
+    *,
+    previous_summary: str,
+    opening_message: str,
+) -> list[str]:
+    """Verify second /start opening uses the previous session summary."""
+    failures: list[str] = []
+    if not previous_summary.strip():
+        return ["restart_opening_judge: previous session summary is empty"]
+    if not opening_message.strip():
+        return ["restart_opening_judge: opening message is empty"]
+
+    try:
+        verdict = judge_restart_opening(
+            client,
+            model,
+            previous_summary=previous_summary,
+            opening_message=opening_message,
+        )
+    except Exception as exc:
+        return [f"restart_opening_judge: judge call failed: {exc}"]
+
+    info(f"restart_opening_judge verdict = {json.dumps(verdict, ensure_ascii=False)}")
+    passed = verdict.get("pass") is True
+    try:
+        score = float(verdict.get("score", 0))
+    except (TypeError, ValueError):
+        score = 0.0
+    if not passed or score < 0.75:
+        failures.append(
+            "restart_opening_judge: opening failed LLM judge "
+            f"(pass={verdict.get('pass')!r}, score={score}, reason={verdict.get('reason')!r})"
+        )
+
+    return failures
+
+
 
 
 def read_guided_state(user_kb: Path) -> dict:
@@ -494,6 +719,7 @@ def main(argv: list[str] | None = None) -> int:
     user_kb = create_minimal_existing_user_kb(user_id)
     proc: subprocess.Popen[Any] | None = None
     failures: list[str] = []
+    interview_transcript: list[str] = []
 
     # DeepSeek (OpenAI-compatible) client for generating dynamic interview answers
     load_dotenv(PROJECT_ROOT / ".env")
@@ -566,6 +792,8 @@ def main(argv: list[str] | None = None) -> int:
         agent_msgs = [e[1] for e in start_events if e[0] == "agent_message"]
         current_question = agent_msgs[-1].get("message", "") if agent_msgs else ""
         info(f"opening question = {current_question!r}")
+        if current_question:
+            interview_transcript.append(f"助手: {current_question}")
 
         section("Start Interview (Idempotency)")
         reuse_events, reuse_session_id = consume_sse(
@@ -602,6 +830,7 @@ def main(argv: list[str] | None = None) -> int:
             answer = generate_answer(answer_client, deepseek_model, current_question)
             info(f"round {round_idx} question: {current_question[:80]}...")
             info(f"round {round_idx} answer:   {answer[:80]}...")
+            interview_transcript.append(f"用户: {answer}")
             message_events, _ = consume_sse(
                 "POST",
                 f"{base_url}/api/interview/message",
@@ -617,6 +846,8 @@ def main(argv: list[str] | None = None) -> int:
             # Extract next question from agent_message events
             next_msgs = [e[1] for e in message_events if e[0] == "agent_message"]
             current_question = next_msgs[-1].get("message", "") if next_msgs else ""
+            if current_question:
+                interview_transcript.append(f"助手: {current_question}")
 
         section("Verify Guided State")
         failures.extend(verify_guided_state(user_kb, args.rounds))
@@ -664,6 +895,19 @@ def main(argv: list[str] | None = None) -> int:
                     f"got {structured_archive.get('status')!r}"
                 )
 
+        section("Judge Session Summary")
+        failures.extend(
+            verify_session_summary_with_llm_judge(
+                user_kb,
+                answer_client,
+                deepseek_model,
+                interview_transcript,
+            )
+        )
+        previous_summary_path, previous_summary = read_latest_session_summary(user_kb)
+        if previous_summary_path is not None:
+            info(f"previous session summary source = {previous_summary_path}")
+
         section("Status After End")
         ended_status_response = requests.get(status_url, timeout=DEFAULT_TIMEOUT)
         info(f"GET {status_url} -> HTTP {ended_status_response.status_code}")
@@ -691,6 +935,55 @@ def main(argv: list[str] | None = None) -> int:
                 failures.append(
                     f"end idempotency: expected status='already_ended', "
                     f"got {end_again_body.get('status')!r}"
+                )
+
+        section("Restart Interview Uses Previous Summary")
+        restart_events, restart_session_id = consume_sse(
+            "POST",
+            f"{base_url}/api/interview/start",
+            json_body={"user_id": user_id},
+            capture_session=True,
+        )
+        if not restart_events:
+            failures.append("restart start: no SSE events received")
+        if not restart_session_id:
+            failures.append("restart start: no session_id captured")
+        elif restart_session_id == session_id:
+            failures.append(
+                f"restart start: expected a new session id after end, got original {restart_session_id!r}"
+            )
+        restart_started = [e for e in restart_events if e[0] == "session_started"]
+        if restart_started:
+            restart_data = restart_started[0][1]
+            if restart_data.get("reused") is not False:
+                failures.append(
+                    f"restart start: expected reused=false, got {restart_data.get('reused')!r}"
+                )
+
+        restart_messages = [e[1] for e in restart_events if e[0] == "agent_message"]
+        restart_opening = restart_messages[-1].get("message", "") if restart_messages else ""
+        info(f"restart opening = {restart_opening!r}")
+        failures.extend(
+            verify_restart_opening_with_llm_judge(
+                answer_client,
+                deepseek_model,
+                previous_summary=previous_summary,
+                opening_message=restart_opening,
+            )
+        )
+
+        if restart_session_id:
+            restart_end_response = requests.post(
+                f"{base_url}/api/interview/end",
+                json={"user_id": user_id, "session_id": restart_session_id},
+                timeout=args.request_timeout,
+            )
+            info(f"POST /api/interview/end (restart session) -> HTTP {restart_end_response.status_code}")
+            info(f"body = {restart_end_response.text[:500]}")
+            if restart_end_response.status_code != 200:
+                failures.append(
+                    "restart end: expected 200 when closing restart session, "
+                    f"got {restart_end_response.status_code}"
                 )
 
         section("Inject Events for Story Generation")
