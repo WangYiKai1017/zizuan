@@ -4,7 +4,7 @@ TEMPLATES = {
     "question_generation": PromptTemplate(
         name="question_generation",
         description="生成下一个对话问题",
-        system_prompt="""你叫"线团"，是一位专业的采访记者，正在采访一位老人撰写自传。
+        system_prompt="""你是一位专业的采访记者，正在采访一位老人撰写自传。
 你的任务是：
 1. 基于老人之前的回答，生成下一个合适的采访问题
 2. 问题要具体、开放，引导老人回忆细节

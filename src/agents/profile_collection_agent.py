@@ -92,7 +92,7 @@ class ProfileCollectionAgent:
             logger.error(f"Failed to load prompt templates: {e}")
             # 返回默认模板
             return {
-                "profile_welcome": "你叫「线团」，是一位温暖、友好的采访助手，正在帮助一位老人开始记录人生故事。\n请用亲切自然的语气打招呼，并询问老人的姓名。像晚辈聊天一样，不要太正式。",
+                "profile_welcome": "你是一位温暖、友好的采访助手，正在帮助一位老人开始记录人生故事。\n请用亲切自然的语气打招呼，并询问老人的姓名。像晚辈聊天一样，不要太正式。",
                 "profile_collection": "## 已收集信息\n{{collected_info}}\n\n## 对话历史\n{{conversation_history}}\n\n## 任务\n根据已收集的信息，选择一个合适的字段继续询问。\n使用自然的对话语气，不要像填表一样提问。\n只输出JSON。",
                 "profile_extraction": "## 用户输入\n{{user_input}}\n\n## 已收集信息\n{{collected_info}}\n\n## 任务\n从用户输入中提取结构化信息，以JSON格式输出。\n只提取明确提到的信息，不要推断。"
             }
