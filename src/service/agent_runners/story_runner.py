@@ -31,7 +31,29 @@ class StoryRunner(BaseAgentRunner):
     def _create_agent(self, kb_path: str) -> StoryGenerationAgent:
         config = get_default_config()
         llm_service = LLMService(config)
-        return StoryGenerationAgent(kb_path=kb_path, llm_service=llm_service)
+        gender = self._read_user_gender(kb_path)
+        return StoryGenerationAgent(kb_path=kb_path, llm_service=llm_service, protagonist_gender=gender)
+
+    @staticmethod
+    def _read_user_gender(kb_path: str) -> str:
+        """Read protagonist gender from user.md. Returns 'male', 'female', or ''."""
+        user_md = Path(kb_path) / "user.md"
+        if not user_md.exists():
+            return ""
+        try:
+            content = user_md.read_text(encoding="utf-8")
+        except Exception:
+            return ""
+        for line in content.splitlines():
+            k, sep, v = line.partition(": ")
+            key = k.strip().lstrip("- ")
+            if key == "性别":
+                value = v.strip().lower()
+                if value in ("男", "男性", "male", "m", "man"):
+                    return "male"
+                if value in ("女", "女性", "female", "f", "woman"):
+                    return "female"
+        return ""
 
     def _create_image_service(self) -> ImageGenerationService | None:
         config = get_image_config()

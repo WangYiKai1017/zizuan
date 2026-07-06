@@ -847,6 +847,7 @@ class MarkdownFileManager:
 
     def _build_session_archive_content(self, session_data: dict, date_str: str) -> str:
         """构建采访记录归档 Markdown 内容。"""
+        title = session_data.get("title", "")
         summary = session_data.get("summary", "")
         events = session_data.get("events", [])
         people = session_data.get("people", [])
@@ -887,6 +888,9 @@ class MarkdownFileManager:
         structured_section = "\n".join(structured_lines)
 
         return f"""# 采访记录 - {date_str}
+
+## 会话标题
+{title or '（无）'}
 
 ## 本次采访摘要
 {summary}

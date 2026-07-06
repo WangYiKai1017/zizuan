@@ -93,11 +93,12 @@ class StoryStateSaveError(StoryGenerationError):
 class StoryGenerationAgent:
     """Lightweight agent for generating stories from life-stage event groups."""
 
-    def __init__(self, kb_path: str | Path, llm_service: LLMService):
+    def __init__(self, kb_path: str | Path, llm_service: LLMService, protagonist_gender: str = ""):
         self.kb_path = Path(kb_path)
         self.llm_service = llm_service
         self.stories_dir = self.kb_path / "stories"
         self.state_path = self.stories_dir / STORY_STATE_FILENAME
+        self.protagonist_gender = protagonist_gender  # "male" | "female" | ""
 
     def load_unconsumed_events(self) -> list[StoryEvent]:
         """Scan event markdown files and return those not yet consumed."""
@@ -331,14 +332,24 @@ class StoryGenerationAgent:
 
     def _build_system_prompt(self, life_stage: str = "") -> str:
         stage_label = LIFE_STAGE_LABELS.get(life_stage, "同一人生时期")
+
+        # Build protagonist description for image prompt constraints
+        gender_label = ""
+        if self.protagonist_gender == "male":
+            gender_label = "Chinese man"
+        elif self.protagonist_gender == "female":
+            gender_label = "Chinese woman"
+        else:
+            gender_label = "Chinese person"
+
         return f"""你是一位擅长整理口述回忆的中文写作者。
 
 请把给定的 15 个事件整理成一篇独立的故事，而不是传记章节、年表或资料清单。本次材料都来自{stage_label}，故事要围绕这个时期形成一个聚合主题，不要扩展成完整人生回顾。
 
 要求：
-- 使用第一人称“我”。
+- 使用第一人称"我"。
 - 先理解这些事件共同呈现的主题，再组织成 4 到 7 个自然段落。
-- 不要按年份逐条扩写，不要写成“一年一个事件”的流水账，不要每段都用年份开头。
+- 不要按年份逐条扩写，不要写成"一年一个事件"的流水账，不要每段都用年份开头。
 - 不要求 15 个事件逐个显性展开；重要事件重点写，次要事件可以合并为背景、转折或变化。
 - 不得忽略核心事件，但可以压缩、合并、概括次要事件。
 - 只能依据事件材料写作；可以自然衔接和概括主题，但不要编造材料中没有的具体人物、地点、物件、对白、动作细节、心理活动或因果。
@@ -348,14 +359,14 @@ class StoryGenerationAgent:
 - 只输出 JSON，不要输出 Markdown 代码块或额外解释。
 
 JSON 格式：
-{{
+{{{{
   "title": "故事标题",
   "body": "故事正文",
-  "image_prompt": "English description for a cover illustration. Pencil sketch style, realistic shading, vintage newspaper illustration feel, warm nostalgic tone, soft textures. Describe the core scene or imagery of the story in under 100 words.",
+  "image_prompt": "English description for a cover illustration. The protagonist is a {gender_label} (age should match the story's life stage — could be a child, youth, adult, or elder depending on the events). Pencil sketch style, realistic shading, vintage newspaper illustration feel, warm nostalgic tone, soft textures. Describe the core scene or imagery of the story in under 100 words.",
   "illustration_prompts": [
-    "English description for a single 4-panel illustration arranged in a 2x2 grid. Each panel depicts a different key scene or emotional moment from the story. Pencil sketch style, realistic shading, vintage newspaper illustration feel, warm nostalgic tone, soft textures. Describe all four panels and their arrangement in under 120 words."
+    "English description for a single 4-panel illustration arranged in a 2x2 grid. The protagonist is a {gender_label} (age should match the story's life stage — could be a child, youth, adult, or elder depending on the events). Each panel depicts a different key scene or emotional moment from the story. The protagonist is Chinese — do NOT depict people of other ethnicities as the main character. Pencil sketch style, realistic shading, vintage newspaper illustration feel, warm nostalgic tone, soft textures. Describe all four panels and their arrangement in under 120 words."
   ]
-}}
+}}}}
 """
 
     def _build_user_prompt(

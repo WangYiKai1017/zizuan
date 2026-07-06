@@ -528,6 +528,7 @@ class InterviewSessionAgent:
             next_questions = []
             summary = ending_result
         ending_message = self._sanitize_archive_text(ending_message)
+        title = self._sanitize_archive_text(title)
         summary = self._sanitize_archive_text(summary)
 
         # 构建 session_data 用于采访记录归档
@@ -536,6 +537,7 @@ class InterviewSessionAgent:
             self.interview_agent.conversation_history
         )
         session_data = {
+            "title": title,
             "summary": summary,
             "events": [],
             "people": [],

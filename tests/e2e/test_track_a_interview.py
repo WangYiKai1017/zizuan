@@ -12,7 +12,7 @@ Usage:
     ./.venv/bin/python tests/e2e/test_track_a_interview.py
 
 Optional:
-    ... --port 10080 --user-id e2e_interview_001 --rounds 8 --cleanup-kb
+    ... --port 10080 --user-id e2e_interview_001 --cleanup-kb
 """
 from __future__ import annotations
 
@@ -53,6 +53,12 @@ from _common import (  # noqa: E402
 
 KB_ROOT = PROJECT_ROOT / "knowledge_base"
 LOG_DIR = PROJECT_ROOT / "logs"
+
+# Fixed round counts with test significance:
+#   Pre-RESTART rounds:  4 rounds → covers profile collection + transition to interview
+#   Restart rounds:     10 rounds → deep enough to trigger topic switching (if any)
+PRE_ROUNDS = 4
+RESTART_ROUNDS = 10
 
 # Profile sent to prefill endpoint (replaces direct user.md writing)
 PREFILL_PROFILE = {
@@ -118,12 +124,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--user-id",
         default="",
         help="User id to test. Defaults to a timestamped e2e user id.",
-    )
-    parser.add_argument(
-        "--rounds",
-        type=int,
-        default=6,
-        help="Number of interview message rounds to run (default: 6).",
     )
     parser.add_argument(
         "--cleanup-kb",
@@ -356,15 +356,77 @@ def judge_session_summary(
     return extract_json_object(content)
 
 
-def read_latest_session_summary(user_kb: Path) -> tuple[Path | None, str]:
-    """Return latest session archive path and its factual summary section."""
+def read_latest_session_archive(user_kb: Path) -> tuple[Path | None, str]:
+    """Return latest session archive path and full markdown content."""
     session_files = sorted((user_kb / "sessions").glob("session_*.md"))
     if not session_files:
         return None, ""
 
     latest_session = session_files[-1]
     content = latest_session.read_text(encoding="utf-8")
+    return latest_session, content
+
+
+def read_latest_session_summary(user_kb: Path) -> tuple[Path | None, str]:
+    """Return latest session archive path and its factual summary section."""
+    latest_session, content = read_latest_session_archive(user_kb)
+    if latest_session is None:
+        return None, ""
     return latest_session, extract_markdown_section(content, "本次采访摘要")
+
+
+def verify_session_archive_fields(
+    user_kb: Path,
+    *,
+    transcript: list[str],
+    expected_title: str,
+) -> tuple[list[str], str]:
+    """Verify session archive fields needed by restart flow."""
+    failures: list[str] = []
+    latest_session, content = read_latest_session_archive(user_kb)
+    if latest_session is None:
+        return ["session_archive: no session archive files found"], ""
+
+    info(f"session_archive: latest session = {latest_session}")
+
+    title_text = extract_markdown_section(content, "会话标题")
+    if expected_title.strip():
+        if title_text != expected_title.strip():
+            failures.append(
+                "session_archive: title section does not match /end title "
+                f"(archive={title_text!r}, api={expected_title!r})"
+            )
+    elif not title_text or title_text == "（无）":
+        failures.append("session_archive: title section is empty")
+
+    conversation_text = extract_markdown_section(content, "本次对话记录")
+    info(f"session_archive: conversation chars = {len(conversation_text)}")
+    if not conversation_text or conversation_text == "（无）":
+        failures.append("session_archive: conversation section is empty")
+        return failures, conversation_text
+
+    if "用户:" not in conversation_text:
+        failures.append("session_archive: conversation section missing user turns")
+    if "助手:" not in conversation_text:
+        failures.append("session_archive: conversation section missing assistant turns")
+
+    compact_conversation = "".join(conversation_text.split())
+    user_answers = [
+        line.removeprefix("用户: ").strip()
+        for line in transcript
+        if line.startswith("用户: ") and line.removeprefix("用户: ").strip()
+    ]
+    snippets = [
+        "".join(answer.split())[:20]
+        for answer in user_answers[-10:]
+        if len("".join(answer.split())) >= 20
+    ]
+    if snippets and not any(snippet in compact_conversation for snippet in snippets):
+        failures.append(
+            "session_archive: conversation section does not contain any recent user answer snippet"
+        )
+
+    return failures, conversation_text
 
 
 def verify_session_summary_with_llm_judge(
@@ -426,6 +488,7 @@ def judge_restart_opening(
     model: str,
     *,
     previous_summary: str,
+    previous_conversation: str,
     opening_message: str,
 ) -> dict[str, Any]:
     """Use an LLM judge to verify restart opening is grounded in latest session summary."""
@@ -435,7 +498,8 @@ def judge_restart_opening(
 1. 开场白必须自然承接上次摘要中的至少一个具体事实、主题或场景。
 2. 开场白不能把摘要里没有的旧知识库内容说成“上次聊到”。
 3. 开场白可以继续引出新的采访问题，但不能脱离上次摘要。
-4. 如果开场白只是泛泛欢迎，或者提到与摘要无关的故事，应判失败。
+4. 如果提供了上次对话记录，开场白不能把用户已经回答过的具体内容当成新问题重复追问。
+5. 如果开场白只是泛泛欢迎，或者提到与摘要无关的故事，应判失败。
 
 请只输出 JSON：
 {{
@@ -447,6 +511,9 @@ def judge_restart_opening(
 
 【上一次 session 摘要】
 {previous_summary}
+
+【上一次 session 对话记录】
+{previous_conversation or "（无）"}
 
 【第二次 /start 开场白】
 {opening_message}
@@ -469,6 +536,7 @@ def verify_restart_opening_with_llm_judge(
     model: str,
     *,
     previous_summary: str,
+    previous_conversation: str,
     opening_message: str,
 ) -> list[str]:
     """Verify second /start opening uses the previous session summary."""
@@ -483,6 +551,7 @@ def verify_restart_opening_with_llm_judge(
             client,
             model,
             previous_summary=previous_summary,
+            previous_conversation=previous_conversation,
             opening_message=opening_message,
         )
     except Exception as exc:
@@ -720,6 +789,8 @@ def main(argv: list[str] | None = None) -> int:
     proc: subprocess.Popen[Any] | None = None
     failures: list[str] = []
     interview_transcript: list[str] = []
+    end_title = ""
+    previous_conversation = ""
 
     # DeepSeek (OpenAI-compatible) client for generating dynamic interview answers
     load_dotenv(PROJECT_ROOT / ".env")
@@ -823,7 +894,7 @@ def main(argv: list[str] | None = None) -> int:
                 )
 
         section("Dynamic Interview (Claude-powered answers)")
-        for round_idx in range(1, args.rounds + 1):
+        for round_idx in range(1, PRE_ROUNDS + 1):
             if not current_question:
                 info(f"round {round_idx}: no question to answer, stopping")
                 break
@@ -849,8 +920,8 @@ def main(argv: list[str] | None = None) -> int:
             if current_question:
                 interview_transcript.append(f"助手: {current_question}")
 
-        section("Verify Guided State")
-        failures.extend(verify_guided_state(user_kb, args.rounds))
+        section("Verify Guided State After First Session")
+        failures.extend(verify_guided_state(user_kb, PRE_ROUNDS))
 
         section("Status Before End")
         status_url = f"{base_url}/api/interview/status/{user_id}/{session_id}"
@@ -885,6 +956,7 @@ def main(argv: list[str] | None = None) -> int:
                     f"end: expected non-empty string title, got {title!r}"
                 )
             else:
+                end_title = title.strip()
                 info(f"end: title = {title!r}")
             structured_archive = body.get("structured_archive")
             if not isinstance(structured_archive, dict):
@@ -896,6 +968,12 @@ def main(argv: list[str] | None = None) -> int:
                 )
 
         section("Judge Session Summary")
+        archive_failures, previous_conversation = verify_session_archive_fields(
+            user_kb,
+            transcript=interview_transcript,
+            expected_title=end_title,
+        )
+        failures.extend(archive_failures)
         failures.extend(
             verify_session_summary_with_llm_judge(
                 user_kb,
@@ -987,6 +1065,7 @@ def main(argv: list[str] | None = None) -> int:
                 answer_client,
                 deepseek_model,
                 previous_summary=previous_summary,
+                previous_conversation=previous_conversation,
                 opening_message=restart_opening,
             )
         )
@@ -1007,9 +1086,9 @@ def main(argv: list[str] | None = None) -> int:
                 f"{followups_after_start} — should be preserved across restart"
             )
 
-        # 6. Send 2 more messages — followup count should accumulate further
+        # 6. Send RESTART_ROUNDS messages — should accumulate followups, then advance questions
         restart_question = restart_opening
-        for restart_round in range(1, 3):
+        for restart_round in range(1, RESTART_ROUNDS + 1):
             if not restart_question:
                 break
             answer = generate_answer(answer_client, deepseek_model, restart_question)
@@ -1029,15 +1108,24 @@ def main(argv: list[str] | None = None) -> int:
             if restart_question:
                 interview_transcript.append(f"助手: {restart_question}")
 
-        # 7. Verify followup count accumulated (not reset)
+        # 7. Verify guided state: after RESTART_ROUNDS, several questions should be completed
         state_after_msgs = read_guided_state(user_kb)
         followups_after_msgs = state_after_msgs.get("current_question_followup_count", 0)
-        info(f"After {2} restart messages: followup={followups_after_msgs}")
-        expected_min_followups = followups_before + 1
-        if followups_after_msgs < expected_min_followups:
+        completed_after_msgs = state_after_msgs.get("completed_question_ids", [])
+        info(
+            f"After {RESTART_ROUNDS} restart messages: "
+            f"followup={followups_after_msgs}, "
+            f"completed=({len(completed_after_msgs)}) {completed_after_msgs}"
+        )
+        if len(completed_after_msgs) < 1:
             failures.append(
-                f"restart: followup count after messages ({followups_after_msgs}) "
-                f"should be >= {expected_min_followups} (before={followups_before} + 1+)"
+                f"restart: after {RESTART_ROUNDS} rounds, expected >= 1 completed questions, "
+                f"got {len(completed_after_msgs)} — topic switching may be stuck"
+            )
+        if len(completed_after_msgs) > 4:
+            failures.append(
+                f"restart: after {RESTART_ROUNDS} rounds, expected <= 4 completed questions, "
+                f"got {len(completed_after_msgs)} — switching too fast"
             )
 
         # 8. End restart session
