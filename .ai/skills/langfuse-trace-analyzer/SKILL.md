@@ -17,7 +17,7 @@ description: 拉取并分析单个 Langfuse trace，定位一次具体 Agent/API
    - 从项目根目录运行：
 
 ```bash
-./.venv/bin/python .agents/skills/langfuse-trace-analyzer/scripts/fetch_trace.py <trace_id>
+./.venv/bin/python .ai/skills/langfuse-trace-analyzer/scripts/fetch_trace.py <trace_id>
 ```
 
    - 脚本会读取项目 `.env` 或当前 shell 环境中的：
@@ -25,7 +25,7 @@ description: 拉取并分析单个 Langfuse trace，定位一次具体 Agent/API
      - `LANGFUSE_PUBLIC_KEY`
      - `LANGFUSE_SECRET_KEY`
    - 不要在回复中打印、复制或总结密钥。
-   - 默认输出到 `.agents/runs/langfuse-traces/<trace_id>/`：
+   - 默认输出到 `.ai/runs/langfuse-traces/<trace_id>/`：
      - `raw_observations.json`：原始 observation 数据
      - `timeline.md`：按时间排序的节点输入输出摘要
      - `analysis.md`：自动信号和业务核对底稿
@@ -63,19 +63,19 @@ description: 拉取并分析单个 Langfuse trace，定位一次具体 Agent/API
 扩大查询窗口：
 
 ```bash
-./.venv/bin/python .agents/skills/langfuse-trace-analyzer/scripts/fetch_trace.py <trace_id> --days 90
+./.venv/bin/python .ai/skills/langfuse-trace-analyzer/scripts/fetch_trace.py <trace_id> --days 90
 ```
 
 指定输出目录：
 
 ```bash
-./.venv/bin/python .agents/skills/langfuse-trace-analyzer/scripts/fetch_trace.py <trace_id> --out-dir /tmp/langfuse-trace
+./.venv/bin/python .ai/skills/langfuse-trace-analyzer/scripts/fetch_trace.py <trace_id> --out-dir /tmp/langfuse-trace
 ```
 
 快速查看节点名：
 
 ```bash
-rg -n '^## ' .agents/runs/langfuse-traces/<trace_id>/timeline.md
+rg -n '^## ' .ai/runs/langfuse-traces/<trace_id>/timeline.md
 ```
 
 查看完整 observation 的关键字段：
@@ -84,7 +84,7 @@ rg -n '^## ' .agents/runs/langfuse-traces/<trace_id>/timeline.md
 ./.venv/bin/python - <<'PY'
 import json
 from pathlib import Path
-p = Path(".agents/runs/langfuse-traces/<trace_id>/raw_observations.json")
+p = Path(".ai/runs/langfuse-traces/<trace_id>/raw_observations.json")
 data = json.loads(p.read_text())
 for row in data["observations"]:
     print(row.get("startTime"), row.get("type"), row.get("name"), row.get("level"), row.get("statusMessage"))

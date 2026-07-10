@@ -22,7 +22,15 @@ logs/
 
 # 知识库运行数据
 knowledge_base/
-.agents/runs/
+.ai/runs/
+!.ai/skills/**/knowledge_base/
+!.ai/skills/**/knowledge_base/**
+
+# Cursor subagent loop runtime state
+.project/_loop/loop.db
+.project/_loop/loop.db-*
+.project/_loop/blocks/
+.project/archive/
 
 # 测试
 .coverage

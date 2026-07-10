@@ -272,7 +272,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="拉取单个 Langfuse trace 的 observations 并生成本地分析底稿。")
     parser.add_argument("trace_id", help="Langfuse trace id")
     parser.add_argument("--project-root", default=".", help="项目根目录，默认当前目录")
-    parser.add_argument("--out-dir", default="", help="输出目录；默认 .agents/runs/langfuse-traces/<trace_id>")
+    parser.add_argument("--out-dir", default="", help="输出目录；默认 .ai/runs/langfuse-traces/<trace_id>")
     parser.add_argument("--days", type=int, default=30, help="向前查询多少天，默认 30")
     parser.add_argument("--limit", type=int, default=100, help="每页 observation 数量，默认 100")
     args = parser.parse_args()
@@ -283,7 +283,7 @@ def main() -> int:
     public_key = require_env("LANGFUSE_PUBLIC_KEY")
     secret_key = require_env("LANGFUSE_SECRET_KEY")
 
-    out_dir = Path(args.out_dir) if args.out_dir else project_root / ".agents" / "runs" / "langfuse-traces" / args.trace_id
+    out_dir = Path(args.out_dir) if args.out_dir else project_root / ".ai" / "runs" / "langfuse-traces" / args.trace_id
     out_dir.mkdir(parents=True, exist_ok=True)
 
     rows = fetch_v2_observations(
