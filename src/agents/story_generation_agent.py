@@ -363,9 +363,7 @@ JSON 格式：
   "title": "故事标题",
   "body": "故事正文",
   "image_prompt": "English description for a cover illustration. The protagonist is a {gender_label} (age should match the story's life stage — could be a child, youth, adult, or elder depending on the events). Pencil sketch style, realistic shading, vintage newspaper illustration feel, warm nostalgic tone, soft textures. Describe the core scene or imagery of the story in under 100 words.",
-  "illustration_prompts": [
-    "English description for a single 4-panel illustration arranged in a 2x2 grid. The protagonist is a {gender_label} (age should match the story's life stage — could be a child, youth, adult, or elder depending on the events). Each panel depicts a different key scene or emotional moment from the story. The protagonist is Chinese — do NOT depict people of other ethnicities as the main character. Pencil sketch style, realistic shading, vintage newspaper illustration feel, warm nostalgic tone, soft textures. Describe all four panels and their arrangement in under 120 words."
-  ]
+  "illustration_prompts": "English description for a single 4-panel illustration arranged in a 2x2 grid. The protagonist is a {gender_label} (age should match the story's life stage — could be a child, youth, adult, or elder depending on the events). Each panel depicts a different key scene or emotional moment from the story. The protagonist is Chinese — do NOT depict people of other ethnicities as the main character. Pencil sketch style, realistic shading, vintage newspaper illustration feel, warm nostalgic tone, soft textures. Describe all four panels and their arrangement in under 120 words."
 }}}}
 """
 
@@ -411,6 +409,10 @@ JSON 格式：
         body = str(data.get("body") or "").strip()
         image_prompt = str(data.get("image_prompt") or "").strip()
         raw_prompts = data.get("illustration_prompts") or []
+        if isinstance(raw_prompts, str):
+            raw_prompts = [raw_prompts]
+        elif not isinstance(raw_prompts, list):
+            raw_prompts = []
         illustration_prompts = [str(p).strip() for p in raw_prompts if isinstance(p, str) and p.strip()]
         if not title:
             raise StoryOutputInvalidError("故事标题为空")
