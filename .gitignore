@@ -27,6 +27,7 @@ knowledge_base/
 !.ai/skills/**/knowledge_base/**
 
 # Cursor subagent loop runtime state
+.project/
 .project/_loop/loop.db
 .project/_loop/loop.db-*
 .project/_loop/blocks/
