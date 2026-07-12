@@ -241,8 +241,31 @@ class MarkdownFileManager:
         ]
 
         def _get_brief(file_path: Path) -> str:
-            """Read the first meaningful line (title) or first 50 chars."""
+            """Build a searchable brief, including session title and summary."""
             try:
+                if "sessions" in file_path.parts:
+                    content = file_path.read_text(encoding="utf-8")
+
+                    def _section(heading: str) -> str:
+                        match = re.search(
+                            rf"^## {re.escape(heading)}\s*$\n(.*?)(?=^## |\Z)",
+                            content,
+                            flags=re.MULTILINE | re.DOTALL,
+                        )
+                        if not match:
+                            return ""
+                        return " ".join(match.group(1).split()).strip()
+
+                    title = _section("会话标题")
+                    summary = _section("本次采访摘要")
+                    parts = []
+                    if title and title != "（无）":
+                        parts.append(f"标题：{title}")
+                    if summary and summary != "（无）":
+                        parts.append(f"摘要：{summary}")
+                    if parts:
+                        return "；".join(parts)[:200]
+
                 with open(file_path, "r", encoding="utf-8") as f:
                     first_line = f.readline().strip()
                 # Strip leading '#' for title lines

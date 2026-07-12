@@ -23,6 +23,7 @@ from src.agents.guided_initial_interview_controller import (
     GuidedInitialInterviewController,
 )
 from src.agents.profile_collection_agent import ProfileCollectionAgent
+from src.services.question_generator import QuestionGenerator
 from src.storage.markdown_file_manager import MarkdownFileManager
 from src.tools.memory_cache_tool import MemoryCacheTool
 
@@ -394,6 +395,35 @@ class TestGuidedInitialInterviewController:
             assert decision.result.candidate_question_id == "debug_q_1"
 
     @pytest.mark.asyncio
+    async def test_memory_context_must_be_acknowledged_before_followup(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            controller = self._controller(tmpdir)
+
+            await controller.generate_next(
+                user_input="咱们之前聊过语文老师吧？",
+                memory_context="语文老师曾在课后单独鼓励用户继续写作文。",
+            )
+
+            prompt = controller.llm_service.invoke.await_args.kwargs["prompt"]
+            assert "语文老师曾在课后单独鼓励用户继续写作文" in prompt
+            assert "先用一句话自然接住其中的具体事实" in prompt
+            assert "不要说“不记得”" in prompt
+
+    @pytest.mark.asyncio
+    async def test_prompt_prioritizes_positive_memory_direction(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            controller = self._controller(tmpdir)
+
+            await controller.generate_next(
+                user_input="那时候虽然日子辛苦，但邻居们都特别照顾我。",
+            )
+
+            prompt = controller.llm_service.invoke.await_args.kwargs["prompt"]
+            assert "优先追问轻松、温暖、有趣、有成就感的线索" in prompt
+            assert "不追问痛苦有多深" in prompt
+            assert "不要强行乐观" in prompt
+
+    @pytest.mark.asyncio
     async def test_moves_to_next_question_when_completed(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             controller = self._controller(tmpdir, {
@@ -477,6 +507,30 @@ class TestGuidedInitialInterviewController:
             assert captured["node"] == "guided.advance_to_next_question"
             assert captured["kwargs"]["metadata"]["reason"] == "max_followups_reached"
             observation.update.assert_called_once()
+
+
+class TestFreeInterviewQuestionGenerator:
+    @pytest.mark.asyncio
+    async def test_prompt_uses_same_positive_memory_direction(self):
+        llm_service = MagicMock()
+        llm_service.invoke = AsyncMock(return_value=MagicMock(
+            success=True,
+            content=(
+                '{"question":"邻居当时是怎么照顾您的？",'
+                '"source":"generated","candidate_question_id":null,'
+                '"topic_switched":false,"new_topic":null}'
+            ),
+        ))
+        generator = QuestionGenerator(llm_service=llm_service)
+
+        await generator.generate_next(
+            user_input="那时候虽然日子辛苦，但邻居们都特别照顾我。",
+        )
+
+        prompt = llm_service.invoke.await_args.kwargs["prompt"]
+        assert "优先追问轻松、温暖、有趣、有成就感的线索" in prompt
+        assert "不追问痛苦有多深" in prompt
+        assert "无法自然改写则本轮不使用" in prompt
 
 
 # ============================================================
@@ -644,6 +698,16 @@ class TestParseSessionArchive:
 
 class TestResumeSession:
     @pytest.mark.asyncio
+    async def test_resume_refreshes_summary_index(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            agent = _make_session_agent(tmpdir, user_id="refresh_index_user")
+            agent.llm_service.invoke = AsyncMock(return_value=MagicMock(content="欢迎回来"))
+
+            await agent._resume_session()
+
+            agent.memory_manager.repository.file_manager.create_or_update_summary_index.assert_called_once()
+
+    @pytest.mark.asyncio
     async def test_resume_loads_context(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             user_id = "resume_user"
@@ -741,6 +805,26 @@ class TestTopicTracking:
         key_info = {"events": ["当兵经历"], "persons": [], "locations": []}
         result = agent._detect_current_topic(key_info)
         assert result == "当兵经历"
+
+    @pytest.mark.asyncio
+    async def test_key_information_prompt_extracts_referenced_topics(self):
+        agent = self._make_interview_agent()
+        agent.llm_service.invoke.return_value = MagicMock(content={
+            "has_key_info": True,
+            "events": ["北京求学经历"],
+            "persons": [],
+            "time_points": [],
+            "locations": ["北京"],
+            "query_text": "北京求学经历",
+            "tags": ["北京", "求学"],
+        })
+
+        result = await agent._identify_key_information("咱们之前聊过我在北京上学吧？")
+
+        prompt = agent.llm_service.invoke.await_args.kwargs["prompt"]
+        assert result["query_text"] == "北京求学经历"
+        assert "不是“用户是否提供了新的事实”" in prompt
+        assert "陈述、提问，还是引用已经谈过的内容" in prompt
 
     def test_detect_topic_from_persons(self):
         agent = self._make_interview_agent()
@@ -903,6 +987,25 @@ class TestSummaryIndexGeneration:
 
             assert "play" in content
             assert "chapter1" not in content
+
+    def test_session_index_includes_title_and_summary(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            fm = MarkdownFileManager(base_path=tmpdir, conversation_id="session_idx")
+            session_file = fm.base_path / "sessions" / "session_2026-07-12_10-00.md"
+            session_file.parent.mkdir(parents=True, exist_ok=True)
+            session_file.write_text(
+                "# 采访记录 - 2026-07-12\n\n"
+                "## 会话标题\n北京求学往事\n\n"
+                "## 本次采访摘要\n用户回忆了语文老师鼓励他写作文的经历。\n\n"
+                "## 本次对话记录\n一些原始对话。\n",
+                encoding="utf-8",
+            )
+
+            path = fm.create_or_update_summary_index()
+            content = Path(path).read_text(encoding="utf-8")
+
+            assert "标题：北京求学往事" in content
+            assert "摘要：用户回忆了语文老师鼓励他写作文的经历" in content
 
     def test_empty_sections_not_included(self):
         with tempfile.TemporaryDirectory() as tmpdir:

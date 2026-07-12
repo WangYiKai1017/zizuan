@@ -289,7 +289,7 @@ class InterviewAgent:
     
     async def _identify_key_information(self, user_input: str) -> Optional[Dict]:
         """
-        识别用户回答中的关键信息
+        提取用户表达中可用于检索历史知识库的信息
         
         关键信息类型：
         - 事件：具体的事件描述
@@ -303,7 +303,18 @@ class InterviewAgent:
         """
         identification_prompt = f"""## 任务
 
-分析用户回答，识别其中的关键信息。
+分析用户当前的表达，提取适合查询其历史知识库的主题线索。
+
+这里判断的是“是否存在可检索的具体主题”，不是“用户是否提供了新的事实”。
+无论用户是在陈述、提问，还是引用已经谈过的内容，只要提到了具体人物、事件、经历、时间或地点，都应返回 has_key_info=true。
+
+生成 query_text 时：
+- 使用对话历史消解“那件事”“那个老师”等指代
+- 提炼成简短、具体的历史主题，例如“北京求学经历”“语文老师鼓励作文”
+- 去掉寒暄、反问等对检索无帮助的表达
+- tags 使用主题中的核心人物、事件、时间和地点
+
+只有“嗯”“好的”“继续吧”等完全没有具体主题的表达，才返回 has_key_info=false。
 
 ## 用户回答
 
@@ -313,7 +324,7 @@ class InterviewAgent:
 
 以JSON格式输出，包含以下字段：
 - has_key_info: boolean，是否包含关键信息
-- events: 事件列表
+- events: 事件或经历主题列表
 - persons: 人物列表
 - time_points: 时间点列表
 - locations: 地点列表

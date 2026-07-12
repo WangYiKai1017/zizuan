@@ -191,6 +191,13 @@ class InterviewSessionAgent:
         else:
             logger.info(f"Sessions directory not found: {sessions_dir}")
 
+        # Refresh searchable session briefs so existing users benefit from the
+        # latest title/summary index format without a separate migration.
+        try:
+            self.memory_manager.repository.file_manager.create_or_update_summary_index()
+        except Exception as e:
+            logger.warning("Failed to refresh summary index while resuming %s: %s", self.user_id, e)
+
         # 2. 上次准备好的问题 → 转为候选问题格式，注入首轮 handle_input
         next_questions = prev_context.get("next_questions", []) or []
         if next_questions:
