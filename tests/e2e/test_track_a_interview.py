@@ -599,10 +599,10 @@ def verify_guided_state(user_kb: Path, rounds: int) -> list[str]:
     completed_ids = state.get("completed_question_ids", [])
     info(f"completed_question_ids ({len(completed_ids)} total) = {completed_ids}")
 
-    # After N rounds, guided phase should not be complete (64 preset questions)
+    # After N rounds, guided phase should not be complete (62 preset questions)
     if state.get("guided_completed") is True:
         failures.append(
-            f"guided_state: guided_completed=true after only {rounds} rounds (64 preset questions)"
+            f"guided_state: guided_completed=true after only {rounds} rounds (62 preset questions)"
         )
 
     # current_question_id should not be in completed list

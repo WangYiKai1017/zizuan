@@ -115,7 +115,7 @@ python -m pytest tests/ --ignore=tests/e2e
 
 **阶段 1：引导式采访（Guided）**
 - 使用 `GuidedInitialInterviewController`
-- 64 个预设问题（定义在 `src/config/data/initial_interview_questions.csv`），按人生阶段分组（childhood / youth / middle_age / elderly）
+- 62 个预设问题（定义在 `src/config/data/initial_interview_questions.csv`），按人生阶段分组（childhood / youth / middle_age / elderly）
 - 每个问题最多追问 10 次
 - 默认行为是**深挖当前问题**，而不是切换话题
 - 切换条件：用户明确结束 / 连续短回答 / 追问次数上限 / 用户主动跳转
@@ -403,7 +403,7 @@ LANGFUSE_HOST=https://cloud.langfuse.com  # 或自部署地址
 | `src/service/app.py` | FastAPI 应用工厂（注册 7 个 router + lifespan） |
 | `src/config/llm_config.py` | LLM 配置（model、API key、temperature） |
 | `src/config/image_config.py` | 图片生成配置（model、size） |
-| `src/config/initial_interview_questions.py` | 加载 64 个预设采访问题（从 CSV） |
+| `src/config/initial_interview_questions.py` | 加载 62 个预设采访问题（从 CSV） |
 | `src/config/profile_questions.py` | Profile 采集问题库 |
 
 ### Agents

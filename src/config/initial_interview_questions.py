@@ -10,7 +10,7 @@ from typing import Dict, List
 QUESTION_DATA_PATH = (
     Path(__file__).resolve().parent / "data" / "initial_interview_questions.csv"
 )
-REQUIRED_COLUMNS = {"id", "order", "stage", "stage_label", "question", "focus"}
+REQUIRED_COLUMNS = {"id", "order", "stage", "stage_label", "question"}
 VALID_STAGES = {"childhood", "youth", "middle_age", "elderly"}
 
 
@@ -36,7 +36,6 @@ def load_initial_interview_questions(
             stage = (row.get("stage") or "").strip()
             stage_label = (row.get("stage_label") or "").strip()
             order_text = (row.get("order") or "").strip()
-            focus = (row.get("focus") or "").strip()
 
             if not question_id or not question:
                 raise ValueError(
@@ -69,7 +68,6 @@ def load_initial_interview_questions(
                     "stage": stage,
                     "stage_label": stage_label,
                     "question": question,
-                    "focus": focus,
                 }
             )
 

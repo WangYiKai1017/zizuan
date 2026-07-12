@@ -375,7 +375,6 @@ class GuidedInitialInterviewController:
             f"- [{q['id']}] {q.get('stage_label') or q['stage']} ({q['stage']})：{q['question']}"
             for q in remaining_questions[:5]
         )
-        current_focus = current_question.get("focus") or "无"
         current_stage_label = current_question.get("stage_label") or current_question["stage"]
 
         # 上次对话记录（避免 agent 围绕同一问题重复发问）
@@ -397,7 +396,6 @@ class GuidedInitialInterviewController:
 - id: {current_question['id']}
 - 阶段: {current_stage_label} ({current_question['stage']})
 - 问题: {current_question['question']}
-- 挖掘方向: {current_focus}
 - 当前问题已追问次数: {state.get('current_question_followup_count', 0)}
 - 每个预设问题最多追问次数: {MAX_FOLLOWUPS_PER_GUIDED_QUESTION}
 
