@@ -786,6 +786,7 @@ def main(argv: list[str] | None = None) -> int:
     base_url = f"http://{args.host}:{port}"
     user_id = args.user_id or f"e2e_interview_{int(time.time())}"
     user_kb = create_minimal_existing_user_kb(user_id)
+    organizer_backups_before = set(KB_ROOT.glob(f"{user_id}_????????_??????"))
     proc: subprocess.Popen[Any] | None = None
     failures: list[str] = []
     interview_transcript: list[str] = []
@@ -1129,6 +1130,7 @@ def main(argv: list[str] | None = None) -> int:
             )
 
         # 8. End restart session
+        restart_end_succeeded = False
         if restart_session_id:
             restart_end_response = requests.post(
                 f"{base_url}/api/interview/end",
@@ -1140,6 +1142,64 @@ def main(argv: list[str] | None = None) -> int:
                 failures.append(
                     f"restart end: expected 200, got {restart_end_response.status_code}"
                 )
+            else:
+                restart_end_succeeded = True
+
+        # 9. The frontend starts a full KB organization run after the final end.
+        # Keep this as a separate API call so Langfuse records an independent
+        # kb_organizer.run trace in addition to interview.end's session archive.
+        section("Run KB Organizer After Final End")
+        if restart_end_succeeded:
+            organizer_events, _ = consume_sse(
+                "POST",
+                f"{base_url}/api/kb-organizer/run",
+                json_body={"user_id": user_id},
+            )
+            organizer_completed = [e for e in organizer_events if e[0] == "task_completed"]
+            organizer_done = [e for e in organizer_events if e[0] == "done"]
+            organizer_failed = [
+                e for e in organizer_events if e[0] in {"failed", "error"}
+            ]
+
+            info(f"kb_organizer task_completed events: {len(organizer_completed)}")
+            info(f"kb_organizer done events: {len(organizer_done)}")
+            info(f"kb_organizer failed/error events: {len(organizer_failed)}")
+
+            if not organizer_events:
+                failures.append("kb_organizer: no SSE events received")
+            if organizer_failed:
+                failures.append(
+                    "kb_organizer: received failed/error events: "
+                    f"{[event[1] for event in organizer_failed]}"
+                )
+            if not organizer_completed:
+                failures.append("kb_organizer: no task_completed event received")
+            if not organizer_done:
+                failures.append("kb_organizer: no done event received")
+
+            organizer_result_response = requests.get(
+                f"{base_url}/api/kb-organizer/result/{user_id}",
+                timeout=DEFAULT_TIMEOUT,
+            )
+            info(
+                "GET /api/kb-organizer/result/"
+                f"{user_id} -> HTTP {organizer_result_response.status_code}"
+            )
+            if organizer_result_response.status_code != 200:
+                failures.append(
+                    "kb_organizer result: expected 200, got "
+                    f"{organizer_result_response.status_code}"
+                )
+            else:
+                organizer_result = organizer_result_response.json()
+                info(f"kb_organizer result status = {organizer_result.get('status')!r}")
+                if organizer_result.get("status") != "completed":
+                    failures.append(
+                        "kb_organizer result: expected status='completed', got "
+                        f"{organizer_result.get('status')!r}"
+                    )
+        else:
+            failures.append("kb_organizer: skipped because final interview end did not succeed")
 
         section("Inject Events for Story Generation")
         injected = inject_fake_events(user_kb, "childhood", count=16)
@@ -1217,9 +1277,15 @@ def main(argv: list[str] | None = None) -> int:
         return summarize("Interview API happy path E2E", False, failures)
     finally:
         stop_service(proc)
-        if args.cleanup_kb and user_kb.exists():
-            shutil.rmtree(user_kb)
-            info(f"Cleaned generated KB: {user_kb}")
+        if args.cleanup_kb:
+            if user_kb.exists():
+                shutil.rmtree(user_kb)
+                info(f"Cleaned generated KB: {user_kb}")
+            organizer_backups_after = set(KB_ROOT.glob(f"{user_id}_????????_??????"))
+            for backup_path in sorted(organizer_backups_after - organizer_backups_before):
+                if backup_path.is_dir():
+                    shutil.rmtree(backup_path)
+                    info(f"Cleaned generated KB organizer backup: {backup_path}")
 
 
 if __name__ == "__main__":

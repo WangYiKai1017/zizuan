@@ -40,7 +40,9 @@ E2E 测试是理解整个系统最快的路径——它们按真实用户的使�
 | 6. Summary 质量 | LLM-as-judge 评估 | 摘要不能泛泛而谈，需包含具体故事/人物 |
 | 7. Restart | `POST /api/interview/start` 再次调用 | 新 session、加载上次摘要、phase=interview |
 | 8. 多轮对话（10轮） | `POST /api/interview/message` (SSE × 10) | 问题切换：1-4 个预设问题应被完成 |
-| 9. 故事生成 | `POST /api/stories/generate` (SSE) | 注入 16 个假事件 → 生成故事 + 封面图 + 插图 |
+| 9. 最终结束 | `POST /api/interview/end` | 结束重启后的采访会话 |
+| 10. 知识库整理 | `POST /api/kb-organizer/run` (SSE) | 前端 End 后流程：完成整库整理并验证结果接口 |
+| 11. 故事生成 | `POST /api/stories/generate` (SSE) | 注入 16 个假事件 → 生成故事 + 封面图 + 插图 |
 
 **关键常量**（有测试语义，不是随便定的）：
 ```python
