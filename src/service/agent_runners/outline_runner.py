@@ -60,7 +60,11 @@ class OutlineRunner(BaseAgentRunner):
                     result = await agent.run(user_id=self.user_id, kb_path=kb_path)
 
             # Check if no changes
-            if hasattr(result, 'has_changes') and not result.has_changes:
+            if (
+                hasattr(result, 'has_changes')
+                and not result.has_changes
+                and not getattr(result, 'needs_outline_repair', False)
+            ):
                 await self.emitter.emit("completed", {
                     "status": "completed",
                     "has_changes": False,

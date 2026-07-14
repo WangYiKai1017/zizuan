@@ -31,6 +31,7 @@ class OutlineAgentState(BaseModel):
     timeline: list[TimelineEntry] = Field(default_factory=list)
     raw_materials_text: str = ""  # 格式化后的材料文本(给LLM用)
     has_changes: bool = True  # 是否检测到新材料
+    needs_outline_repair: bool = False  # 已有大纲包含可确定修复的重复章节
     changed_files: list[str] = Field(default_factory=list)
 
     # 分析阶段输出

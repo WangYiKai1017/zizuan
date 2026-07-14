@@ -48,6 +48,7 @@ def build_biography_outline_graph(agent: "BiographyOutlineAgent"):
         agent.should_continue_after_scan,
         {
             "continue": "analyze_materials",
+            "repair": "diff_and_update",
             "end": END,
         },
     )

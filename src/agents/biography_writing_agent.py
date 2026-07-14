@@ -16,6 +16,7 @@ from src.models.biography_models import (
     ChapterTask,
 )
 from src.models.biography_writing_state import WritingAgentState
+from src.services.biography_chapter_matcher import deduplicate_chapters
 from src.services.biography_file_manager import BiographyFileManager
 from src.services.biography_material_analyzer import BiographyMaterialAnalyzer
 from src.services.llm_service import LLMService
@@ -71,6 +72,26 @@ class BiographyWritingAgent:
                 "status": AgentStatus.COMPLETED,
                 "error_message": "未找到大纲文件",
             }
+
+        deduplicated, removed_duplicates = deduplicate_chapters(outline.chapters)
+        if removed_duplicates:
+            outline.chapters = deduplicated
+            outline.version += 1
+            outline.last_updated = datetime.now()
+            for removed, kept, reason in removed_duplicates:
+                logger.warning(
+                    "[load_tasks] 清理重复章节: %s -> %s (%s)",
+                    removed.id,
+                    kept.id,
+                    reason,
+                )
+            with observe_step(
+                "load_tasks.repair_duplicate_outline",
+                as_type="tool",
+                metadata={"removed_count": len(removed_duplicates)},
+            ):
+                self.file_manager.save_outline(outline)
+                self.file_manager.merge_chapters_to_full(outline)
 
         # Filter confirmed chapters
         confirmed = [

@@ -19,6 +19,10 @@ from src.models.biography_models import (
 )
 from src.models.biography_outline_state import OutlineAgentState
 from src.services.biography_file_manager import BiographyFileManager
+from src.services.biography_chapter_matcher import (
+    chapter_identity_reason,
+    deduplicate_chapters,
+)
 from src.services.biography_material_analyzer import BiographyMaterialAnalyzer
 from src.services.llm_service import LLMService
 from src.services.observability import observe_step
@@ -83,11 +87,28 @@ class BiographyOutlineAgent:
         # Check if there are changes
         has_changes = current_hash != prev_state.kb_content_hash
 
-        if not has_changes:
+        # Load and validate the existing outline even when KB content is unchanged.
+        current_outline = self.file_manager.load_outline()
+        needs_outline_repair = False
+        if current_outline and current_outline.chapters:
+            _, existing_duplicates = deduplicate_chapters(current_outline.chapters)
+            needs_outline_repair = bool(existing_duplicates)
+
+        if not has_changes and not needs_outline_repair:
             logger.info("[scan_kb] 知识库无变化，跳过处理")
             return {
                 "has_changes": False,
+                "needs_outline_repair": False,
                 "status": AgentStatus.COMPLETED,
+            }
+
+        if not has_changes and needs_outline_repair:
+            logger.warning("[scan_kb] 知识库无变化，但已有大纲包含重复章节")
+            return {
+                "has_changes": False,
+                "needs_outline_repair": True,
+                "changed_files": [],
+                "current_outline": current_outline,
             }
 
         # Detect specific changed files
@@ -98,24 +119,26 @@ class BiographyOutlineAgent:
         with observe_step("scan_kb.scan_and_parse_materials", as_type="tool"):
             result = self.material_analyzer.scan_and_parse_all()
 
-        # Load existing outline if any
-        current_outline = self.file_manager.load_outline()
-
         return {
             "events": result["events"],
             "people": result["people"],
             "timeline": result["timeline"],
             "raw_materials_text": result["raw_content"],
             "has_changes": True,
+            "needs_outline_repair": needs_outline_repair,
             "changed_files": changed_files,
             "current_outline": current_outline,
         }
 
     def should_continue_after_scan(self, state: OutlineAgentState) -> str:
         """判断扫描后是否继续处理"""
+        if state.has_changes:
+            return "continue"
+        if state.needs_outline_repair:
+            return "repair"
         if not state.has_changes:
             return "end"
-        return "continue"
+        return "end"
 
     async def analyze_materials_node(self, state: OutlineAgentState) -> dict:
         """LLM 分析材料
@@ -346,6 +369,32 @@ class BiographyOutlineAgent:
             text = text.replace(old, new)
         return text.strip()
 
+    @staticmethod
+    def _planning_signature(chapter: ChapterEntry) -> tuple:
+        return (
+            chapter.title,
+            chapter.life_stage,
+            chapter.theme,
+            tuple(chapter.source_materials),
+            chapter.summary,
+        )
+
+    @staticmethod
+    def _apply_proposed_plan(target: ChapterEntry, proposed: ChapterEntry) -> None:
+        """Update editable planning fields while preserving chapter identity/state."""
+        target.title = proposed.title
+        target.life_stage = proposed.life_stage
+        target.theme = proposed.theme
+        target.source_materials = list(proposed.source_materials)
+        target.summary = proposed.summary
+
+    @staticmethod
+    def _allocate_chapter_id(used_ids: set[str]) -> str:
+        number = 1
+        while f"ch{number:02d}" in used_ids:
+            number += 1
+        return f"ch{number:02d}"
+
     async def diff_and_update_node(self, state: OutlineAgentState) -> dict:
         """对比已有大纲，更新并写入文件
 
@@ -360,24 +409,108 @@ class BiographyOutlineAgent:
         if state.current_outline:
             # Incremental update mode
             final_outline = state.current_outline.model_copy(deep=True)
-            existing_ids = {ch.id for ch in final_outline.chapters}
+            deduplicated, removed_duplicates = deduplicate_chapters(
+                final_outline.chapters
+            )
+            final_outline.chapters = deduplicated
+            for removed, kept, reason in removed_duplicates:
+                changes_made.append(
+                    OutlineChange(
+                        action="remove_duplicate",
+                        chapter_id=removed.id,
+                        reason=(
+                            f"与章节 {kept.id} 重复（{reason}），保留状态更成熟的章节"
+                        ),
+                    )
+                )
+                logger.warning(
+                    "[diff_and_update] 清理重复章节: %s -> %s (%s)",
+                    removed.id,
+                    kept.id,
+                    reason,
+                )
 
-            # Add new chapters
+            used_ids = {ch.id for ch in final_outline.chapters}
+            matched_ids: set[str] = set()
+
+            # Match proposed chapters back to stable existing identities.
             for proposed in state.proposed_chapters:
-                if proposed.id not in existing_ids:
-                    proposed.status = ChapterStatus.DRAFT
-                    final_outline.chapters.append(proposed)
-                    changes_made.append(
-                        OutlineChange(
-                            action="add",
-                            chapter_id=proposed.id,
-                            chapter_entry=proposed,
-                            reason="新材料产生的新章节",
+                matched = None
+                match_reason = None
+                for existing in final_outline.chapters:
+                    reason = chapter_identity_reason(existing, proposed)
+                    if reason:
+                        matched = existing
+                        match_reason = reason
+                        break
+
+                if matched is not None:
+                    if matched.id in matched_ids:
+                        logger.warning(
+                            "[diff_and_update] 忽略重复 proposed 章节: %s - %s，已匹配 %s",
+                            proposed.id,
+                            proposed.title,
+                            matched.id,
                         )
+                        continue
+                    matched_ids.add(matched.id)
+
+                    before = self._planning_signature(matched)
+                    status_before = matched.status
+                    changed_sources = set(state.changed_files)
+                    has_relevant_material_change = bool(
+                        changed_sources
+                        & (set(matched.source_materials) | set(proposed.source_materials))
                     )
+
+                    if matched.status in {ChapterStatus.DRAFT, ChapterStatus.OUTDATED}:
+                        self._apply_proposed_plan(matched, proposed)
+                    elif matched.status == ChapterStatus.WRITTEN and has_relevant_material_change:
+                        self._apply_proposed_plan(matched, proposed)
+                        matched.status = ChapterStatus.OUTDATED
+
+                    after = self._planning_signature(matched)
+                    if before != after or status_before != matched.status:
+                        action = (
+                            "mark_outdated"
+                            if (
+                                status_before == ChapterStatus.WRITTEN
+                                and matched.status == ChapterStatus.OUTDATED
+                            )
+                            else "update"
+                        )
+                        changes_made.append(
+                            OutlineChange(
+                                action=action,
+                                chapter_id=matched.id,
+                                chapter_entry=matched,
+                                reason=f"匹配已有章节（{match_reason}）并更新规划",
+                            )
+                        )
                     logger.info(
-                        f"[diff_and_update] 新增章节: {proposed.id} - {proposed.title}"
+                        "[diff_and_update] 匹配已有章节: %s -> %s (%s)",
+                        proposed.id,
+                        matched.id,
+                        match_reason,
                     )
+                    continue
+
+                if proposed.id in used_ids or not re.fullmatch(r"ch\d+", proposed.id):
+                    proposed.id = self._allocate_chapter_id(used_ids)
+                proposed.status = ChapterStatus.DRAFT
+                final_outline.chapters.append(proposed)
+                used_ids.add(proposed.id)
+                changes_made.append(
+                    OutlineChange(
+                        action="add",
+                        chapter_id=proposed.id,
+                        chapter_entry=proposed,
+                        reason="新材料产生的新章节",
+                    )
+                )
+                logger.info(
+                    f"[diff_and_update] 新增章节: {proposed.id} - {proposed.title}"
+                )
 
             # Check if existing written chapters need outdating
             for existing_ch in final_outline.chapters:
@@ -405,13 +538,30 @@ class BiographyOutlineAgent:
 
         else:
             # First run - create new outline
+            unique_proposed, removed_duplicates = deduplicate_chapters(
+                state.proposed_chapters,
+                match_by_id=False,
+            )
+            used_ids: set[str] = set()
+            for chapter in unique_proposed:
+                if chapter.id in used_ids or not re.fullmatch(r"ch\d+", chapter.id):
+                    chapter.id = self._allocate_chapter_id(used_ids)
+                used_ids.add(chapter.id)
+
             final_outline = OutlineDocument(
                 title="我的人生故事",
                 author=state.user_id,
                 version=1,
                 last_updated=datetime.now(),
-                chapters=state.proposed_chapters,
+                chapters=unique_proposed,
             )
+            for removed, kept, reason in removed_duplicates:
+                logger.warning(
+                    "[diff_and_update] 首次生成忽略重复章节: %s -> %s (%s)",
+                    removed.id,
+                    kept.id,
+                    reason,
+                )
             # All chapters start as DRAFT
             for ch in final_outline.chapters:
                 ch.status = ChapterStatus.DRAFT

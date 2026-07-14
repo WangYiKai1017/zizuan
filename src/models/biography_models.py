@@ -100,7 +100,10 @@ class TimelineEntry(BaseModel):
 class OutlineChange(BaseModel):
     """大纲变更记录"""
 
-    action: str = Field(..., description="add / update / mark_outdated")
+    action: str = Field(
+        ...,
+        description="add / update / mark_outdated / remove_duplicate",
+    )
     chapter_id: str = Field(default="")
     chapter_entry: Optional[ChapterEntry] = Field(default=None)
     reason: str = Field(default="")
