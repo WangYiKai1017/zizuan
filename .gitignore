@@ -42,4 +42,5 @@ htmlcov/
 # 构建
 dist/
 build/
+outputs/
 *.egg-info/
