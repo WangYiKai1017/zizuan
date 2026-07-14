@@ -217,25 +217,40 @@ class KBOrganizerAgent:
             task.result = "未找到 conflict.md，跳过"
             return
         existing = await svc.load_conflict_file("conflict.md")
+        retryable = [
+            conflict for conflict in existing
+            if not conflict.resolved and svc.conflict_has_new_evidence(conflict)
+        ]
+        retried_by_id = {
+            conflict.conflict_id: conflict
+            for conflict in await svc.resolve_conflicts(retryable, state.document_contents)
+        }
         resolved_count = 0
         for conflict in existing:
             if not conflict.resolved:
-                updated = await svc.try_resolve_conflict(conflict, state.document_contents)
+                updated = retried_by_id.get(conflict.conflict_id, conflict)
                 if updated.resolved:
                     resolved_count += 1
                 state.conflict_items.append(updated)
             else:
                 state.conflict_items.append(conflict)
-        task.result = f"处理 {len(existing)} 条已有矛盾，解决 {resolved_count} 条"
+        skipped_count = sum(
+            1 for conflict in existing
+            if not conflict.resolved and conflict.conflict_id not in retried_by_id
+        )
+        task.result = (
+            f"处理 {len(existing)} 条已有矛盾，重试 {len(retryable)} 条，"
+            f"解决 {resolved_count} 条，跳过 {skipped_count} 条无新证据的矛盾"
+        )
 
     async def _do_detect_contradictions(self, task: OrganizerTask, state: KBOrganizerState) -> None:
         """检测文档间的事实矛盾"""
         svc = self.organization_service
         all_paths: List[str] = [f for files in state.all_files.values() for f in files]
         new_conflicts = await svc.detect_contradictions(all_paths)
+        resolved_conflicts = await svc.resolve_conflicts(new_conflicts, state.document_contents)
         resolved_count = 0
-        for idx, conflict in enumerate(new_conflicts, 1):
-            updated = await svc.try_resolve_conflict(conflict, state.document_contents)
+        for idx, updated in enumerate(resolved_conflicts, 1):
             if updated.resolved:
                 resolved_count += 1
             state.conflict_items.append(updated)

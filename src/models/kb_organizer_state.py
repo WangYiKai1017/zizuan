@@ -76,6 +76,23 @@ class ConflictItem(BaseModel):
         return v
 
 
+class ConflictResolutionDecision(BaseModel):
+    """LLM 对单条矛盾的结构化解决结果。"""
+
+    conflict_id: str
+    resolvable: bool = False
+    confidence: str = "low"
+    resolution: str = ""
+    evidence: str = ""
+    file_updates: Dict[str, str] = Field(default_factory=dict)
+
+
+class ConflictResolutionBatch(BaseModel):
+    """一批矛盾的结构化解决结果。"""
+
+    results: List[ConflictResolutionDecision] = Field(default_factory=list)
+
+
 class MergeRecord(BaseModel):
     """
     合并记录

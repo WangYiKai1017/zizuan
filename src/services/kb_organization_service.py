@@ -3,9 +3,14 @@ import json
 import logging
 import re
 from datetime import datetime
+from pathlib import PurePosixPath
 from typing import Any, Dict, List, Optional
 
-from src.models.kb_organizer_state import ConflictItem, MergeRecord
+from src.models.kb_organizer_state import (
+    ConflictItem,
+    ConflictResolutionBatch,
+    MergeRecord,
+)
 from src.services.llm_service import LLMService
 from src.storage.file_operations import FileOperations
 from src.storage.markdown_file_manager import MarkdownFileManager
@@ -15,6 +20,10 @@ logger = logging.getLogger(__name__)
 
 class KBOrganizationService:
     """知识库整理核心业务逻辑"""
+
+    CONFLICT_BATCH_SIZE = 5
+    MAX_EVIDENCE_FILES_PER_CONFLICT = 8
+
     def __init__(
         self,
         llm_service: LLMService,
@@ -175,34 +184,163 @@ class KBOrganizationService:
     async def try_resolve_conflict(
         self, conflict: ConflictItem, all_documents: Dict[str, str]
     ) -> ConflictItem:
-        """尝试在已有文档信息中解决矛盾"""
-        evidence = "\n".join(f"=== {p} ===\n{c}" for p, c in all_documents.items())
-        result = await self.llm_service.invoke_with_template(
-            "kb_conflict_resolver",
-            {"conflict_description": conflict.description, "evidence_documents": evidence},
-            trace_node="detect_contradictions.resolve_conflict",
-            trace_metadata={
-                "conflict_id": conflict.conflict_id,
-                "conflict_type": conflict.conflict_type,
-            },
-        )
-        if not result.success:
-            return conflict
-        try:
-            data = self._extract_json(result.content)
-            if data.get("resolvable", False):
-                conflict.resolved = True
-                conflict.resolution = data.get("resolution", "")
-                conflict.evidence = self._sanitize_generated_text(data.get("evidence", ""))
-                for path, new_content in data.get("file_updates", {}).items():
-                    await self.working_file_manager.create_file(
-                        path,
-                        self._sanitize_generated_text(new_content),
-                        overwrite=True,
+        """兼容单条调用；证据仍严格限制在矛盾涉及的文档内。"""
+        resolved = await self.resolve_conflicts([conflict], all_documents, batch_size=1)
+        return resolved[0]
+
+    async def resolve_conflicts(
+        self,
+        conflicts: List[ConflictItem],
+        all_documents: Dict[str, str],
+        *,
+        batch_size: int = CONFLICT_BATCH_SIZE,
+    ) -> List[ConflictItem]:
+        """分批解决矛盾，并且只向模型提供每条矛盾直接引用的证据文档。"""
+        if not conflicts:
+            return []
+
+        normalized_documents = {
+            self._normalize_relative_path(path): content
+            for path, content in all_documents.items()
+        }
+        results: List[ConflictItem] = []
+        safe_batch_size = max(1, batch_size)
+
+        for offset in range(0, len(conflicts), safe_batch_size):
+            batch = conflicts[offset : offset + safe_batch_size]
+            batch_inputs: List[Dict[str, Any]] = []
+            evidence_documents: Dict[str, str] = {}
+
+            for conflict in batch:
+                evidence_paths = self._evidence_paths_for_conflict(
+                    conflict,
+                    normalized_documents,
+                )
+                if not evidence_paths:
+                    logger.warning(
+                        "[矛盾解决] %s 没有可用的 source_files 证据，保留待核实状态",
+                        conflict.conflict_id,
                     )
-        except (json.JSONDecodeError, KeyError, TypeError) as e:
-            logger.warning(f"解析矛盾解决结果失败: {e}")
-        return conflict
+                    continue
+                batch_inputs.append({
+                    "conflict_id": conflict.conflict_id,
+                    "conflict_type": conflict.conflict_type,
+                    "description": conflict.description,
+                    "source_files": evidence_paths,
+                })
+                for path in evidence_paths:
+                    evidence_documents[path] = normalized_documents[path]
+
+            if not batch_inputs:
+                results.extend(batch)
+                continue
+
+            evidence = "\n\n".join(
+                f"=== {path} ===\n{content}"
+                for path, content in evidence_documents.items()
+            )
+            parsed, result = await self.llm_service.invoke_structured(
+                "kb_conflict_batch_resolver",
+                {
+                    "conflicts_json": json.dumps(batch_inputs, ensure_ascii=False),
+                    "evidence_documents": evidence,
+                },
+                output_model=ConflictResolutionBatch,
+                trace_node="detect_contradictions.resolve_conflicts_batch",
+                trace_metadata={
+                    "batch_index": offset // safe_batch_size + 1,
+                    "conflict_count": len(batch_inputs),
+                    "evidence_file_count": len(evidence_documents),
+                },
+            )
+            if not result.success or parsed is None:
+                logger.warning("批量矛盾解决 LLM 调用失败: %s", result.error)
+                results.extend(batch)
+                continue
+
+            updates_by_id = {
+                item.conflict_id: item.model_dump()
+                for item in parsed.results
+            }
+            for conflict in batch:
+                update = updates_by_id.get(conflict.conflict_id)
+                if update:
+                    await self._apply_conflict_resolution(
+                        conflict,
+                        update,
+                        allowed_paths=set(self._evidence_paths_for_conflict(
+                            conflict,
+                            normalized_documents,
+                        )),
+                    )
+                results.append(conflict)
+
+        return results
+
+    def conflict_has_new_evidence(
+        self,
+        conflict: ConflictItem,
+        conflict_path: str = "conflict.md",
+    ) -> bool:
+        """判断历史矛盾引用的文件是否比 conflict.md 更新。"""
+        conflict_file = self.working_file_manager.base_path / conflict_path
+        if not conflict_file.exists():
+            return True
+
+        conflict_mtime = conflict_file.stat().st_mtime_ns
+        for raw_path in conflict.source_files[: self.MAX_EVIDENCE_FILES_PER_CONFLICT]:
+            path = self.working_file_manager.base_path / self._normalize_relative_path(raw_path)
+            if path.is_file() and path.stat().st_mtime_ns > conflict_mtime:
+                return True
+        return False
+
+    def _evidence_paths_for_conflict(
+        self,
+        conflict: ConflictItem,
+        documents: Dict[str, str],
+    ) -> List[str]:
+        paths: List[str] = []
+        for raw_path in conflict.source_files:
+            path = self._normalize_relative_path(raw_path)
+            if path in documents and path not in paths:
+                paths.append(path)
+            if len(paths) >= self.MAX_EVIDENCE_FILES_PER_CONFLICT:
+                break
+        return paths
+
+    @staticmethod
+    def _normalize_relative_path(path: str) -> str:
+        raw = str(path).replace("\\", "/").strip()
+        while raw.startswith("./"):
+            raw = raw[2:]
+        normalized = PurePosixPath(raw)
+        if normalized.is_absolute() or ".." in normalized.parts:
+            return ""
+        return str(normalized) if str(normalized) != "." else ""
+
+    async def _apply_conflict_resolution(
+        self,
+        conflict: ConflictItem,
+        data: Dict[str, Any],
+        *,
+        allowed_paths: set[str],
+    ) -> None:
+        if not data.get("resolvable", False):
+            return
+
+        conflict.resolved = True
+        conflict.resolution = self._sanitize_generated_text(data.get("resolution", ""))
+        conflict.evidence = self._sanitize_generated_text(data.get("evidence", ""))
+        for raw_path, new_content in (data.get("file_updates") or {}).items():
+            path = self._normalize_relative_path(raw_path)
+            if path not in allowed_paths:
+                logger.warning("[矛盾解决] 拒绝更新证据范围外的文件: %s", path)
+                continue
+            await self.working_file_manager.create_file(
+                path,
+                self._sanitize_generated_text(new_content),
+                overwrite=True,
+            )
 
     # ── conflict.md 管理 ────────────────────────────────────
 

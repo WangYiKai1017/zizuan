@@ -22,6 +22,8 @@ from .kb_organizer_state import (
     KBOrganizerState,
     OrganizerTask,
     ConflictItem,
+    ConflictResolutionBatch,
+    ConflictResolutionDecision,
     MergeRecord,
     TaskStatus,
 )
@@ -86,6 +88,8 @@ __all__ = [
     "KBOrganizerState",
     "OrganizerTask",
     "ConflictItem",
+    "ConflictResolutionBatch",
+    "ConflictResolutionDecision",
     "MergeRecord",
     
     # 枚举类型
