@@ -222,6 +222,56 @@ class TestLLMService:
         assert stats["success_rate"] == pytest.approx(2/3)
         assert stats["total_tokens"] == 350
         assert stats["avg_latency_ms"] == pytest.approx(116.6666667)
+
+    def test_extract_token_usage_derives_missing_total(self, llm_service):
+        """供应商省略 total_tokens 时应使用输入、输出之和。"""
+        response = type("Response", (), {
+            "usage_metadata": {
+                "input_tokens": 120,
+                "output_tokens": 30,
+            },
+        })()
+
+        assert llm_service._extract_token_usage(response) == {
+            "prompt_tokens": 120,
+            "completion_tokens": 30,
+            "total_tokens": 150,
+        }
+
+    def test_extract_token_usage_falls_back_to_response_metadata(self, llm_service):
+        """OpenAI 兼容响应只提供 response_metadata 时也不能记成 0。"""
+        response = type("Response", (), {
+            "usage_metadata": None,
+            "response_metadata": {
+                "token_usage": {
+                    "prompt_tokens": 200,
+                    "completion_tokens": 50,
+                    "total_tokens": 250,
+                    "prompt_tokens_details": {"cached_tokens": 80},
+                },
+            },
+        })()
+
+        assert llm_service._extract_token_usage(response) == {
+            "prompt_tokens": 200,
+            "completion_tokens": 50,
+            "total_tokens": 250,
+            "cache_read_tokens": 80,
+        }
+
+    def test_extract_token_usage_does_not_accept_underreported_total(self, llm_service):
+        """异常的 provider total 不应小于 input + output。"""
+        response = type("Response", (), {
+            "usage_metadata": {
+                "input_tokens": 90,
+                "output_tokens": 20,
+                "total_tokens": 0,
+            },
+        })()
+
+        usage = llm_service._extract_token_usage(response)
+
+        assert usage["total_tokens"] == 110
     
     def test_clear_history(self, llm_service):
         """测试清空调用历史"""

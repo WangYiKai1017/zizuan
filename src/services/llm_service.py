@@ -553,14 +553,75 @@ class LLMService:
         return self._langfuse_handler_cls(trace_context=context.trace_context())
     
     def _extract_token_usage(self, response: Any) -> Dict[str, int]:
-        """提取Token使用量"""
-        if hasattr(response, "usage_metadata"):
-            return {
-                "prompt_tokens": response.usage_metadata.get("input_tokens", 0),
-                "completion_tokens": response.usage_metadata.get("output_tokens", 0),
-                "total_tokens": response.usage_metadata.get("total_tokens", 0),
-            }
-        return {}
+        """Normalize token usage across LangChain/OpenAI-compatible responses.
+
+        Some compatible providers omit ``usage_metadata.total_tokens`` or put
+        the complete usage payload under ``response_metadata.token_usage``.
+        Treating either shape as zero makes node-level and service-level usage
+        reports under-count otherwise successful calls.
+        """
+
+        usage_metadata = getattr(response, "usage_metadata", None) or {}
+        response_metadata = getattr(response, "response_metadata", None) or {}
+        provider_usage = (
+            response_metadata.get("token_usage")
+            or response_metadata.get("usage")
+            or {}
+        )
+
+        def first_count(*values: Any) -> Optional[int]:
+            for value in values:
+                if value is None or isinstance(value, bool):
+                    continue
+                try:
+                    return max(0, int(value))
+                except (TypeError, ValueError):
+                    continue
+            return None
+
+        prompt_tokens = first_count(
+            usage_metadata.get("input_tokens"),
+            usage_metadata.get("prompt_tokens"),
+            provider_usage.get("prompt_tokens"),
+            provider_usage.get("input_tokens"),
+        ) or 0
+        completion_tokens = first_count(
+            usage_metadata.get("output_tokens"),
+            usage_metadata.get("completion_tokens"),
+            provider_usage.get("completion_tokens"),
+            provider_usage.get("output_tokens"),
+        ) or 0
+        reported_total = first_count(
+            usage_metadata.get("total_tokens"),
+            provider_usage.get("total_tokens"),
+        )
+        calculated_total = prompt_tokens + completion_tokens
+        total_tokens = max(reported_total or 0, calculated_total)
+
+        result = {
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": total_tokens,
+        }
+
+        input_details = usage_metadata.get("input_token_details") or {}
+        prompt_details = provider_usage.get("prompt_tokens_details") or {}
+        cache_read_tokens = first_count(
+            input_details.get("cache_read"),
+            input_details.get("cached_tokens"),
+            prompt_details.get("cached_tokens"),
+            provider_usage.get("prompt_cache_hit_tokens"),
+        )
+        cache_creation_tokens = first_count(
+            input_details.get("cache_creation"),
+            provider_usage.get("prompt_cache_miss_tokens"),
+        )
+        if cache_read_tokens is not None:
+            result["cache_read_tokens"] = cache_read_tokens
+        if cache_creation_tokens is not None:
+            result["cache_creation_tokens"] = cache_creation_tokens
+
+        return result
     
     def get_stats(self) -> Dict[str, Any]:
         """获取调用统计"""
