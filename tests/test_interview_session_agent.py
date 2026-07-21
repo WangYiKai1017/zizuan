@@ -133,93 +133,6 @@ class TestCheckKnowledgeBase:
 
 
 # ============================================================
-# 2. test_compute_address_style
-# ============================================================
-
-
-class TestComputeAddressStyle:
-    def _agent(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            return _make_session_agent(tmpdir)
-
-    def test_elderly_male(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            agent = _make_session_agent(tmpdir)
-            profile = {"name": "张三", "age": "75", "family_status": "妻子已故"}
-            assert agent._compute_address_style(profile) == "张爷爷"
-
-    def test_elderly_female(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            agent = _make_session_agent(tmpdir)
-            profile = {"name": "李秀英", "age": "80", "family_status": "丈夫健在"}
-            assert agent._compute_address_style(profile) == "李奶奶"
-
-    def test_gender_from_wechat_profile_takes_priority(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            agent = _make_session_agent(tmpdir)
-            profile = {"name": "李秀英", "age": "80", "gender": "女"}
-            assert agent._compute_address_style(profile) == "李奶奶"
-
-    def test_middle_age_male(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            agent = _make_session_agent(tmpdir)
-            profile = {"name": "王强", "age": "55", "family_status": "妻子是教师"}
-            assert agent._compute_address_style(profile) == "王叔叔"
-
-    def test_middle_age_female(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            agent = _make_session_agent(tmpdir)
-            profile = {"name": "陈梅", "age": "60", "family_status": "老公退休了"}
-            assert agent._compute_address_style(profile) == "陈阿姨"
-
-    def test_young_male(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            agent = _make_session_agent(tmpdir)
-            profile = {"name": "刘伟", "age": "45", "family_status": "老婆在外地工作"}
-            assert agent._compute_address_style(profile) == "刘先生"
-
-    def test_young_female(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            agent = _make_session_agent(tmpdir)
-            profile = {"name": "赵敏", "age": "40", "family_status": "丈夫是工程师"}
-            assert agent._compute_address_style(profile) == "赵女士"
-
-    def test_unknown_gender_uses_neutral_address(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            agent = _make_session_agent(tmpdir)
-            profile = {"name": "王秀兰", "age": "78"}
-            assert agent._compute_address_style(profile) == "您"
-
-    def test_no_age(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            agent = _make_session_agent(tmpdir)
-            profile = {"name": "张三"}
-            assert agent._compute_address_style(profile) == "您"
-
-    def test_no_name(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            agent = _make_session_agent(tmpdir)
-            profile = {"age": "75"}
-            assert agent._compute_address_style(profile) == "您"
-
-    def test_invalid_age_string(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            agent = _make_session_agent(tmpdir)
-            profile = {"name": "张三", "age": "不知道"}
-            assert agent._compute_address_style(profile) == "您"
-
-    def test_empty_profile(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            agent = _make_session_agent(tmpdir)
-            assert agent._compute_address_style({}) == "您"
-
-    def test_none_profile(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            agent = _make_session_agent(tmpdir)
-            assert agent._compute_address_style(None) == "您"
-
-
-# ============================================================
 # 3. test_parse_user_md
 # ============================================================
 
@@ -306,6 +219,11 @@ class TestPrefilledProfileFlow:
             assert agent.profile_agent.collected_info["name"] == "王秀兰"
             assert agent.profile_agent.collected_info["age"] == "78"
             assert agent.profile_agent.collected_info["gender"] == "女"
+            prompt = agent.llm_service.invoke.await_args.kwargs["prompt"]
+            assert "始终只使用“您”" in prompt
+            assert "秀兰阿姨" not in prompt
+            assert "老人家，您" not in prompt
+            assert "{{elderly_title}}" not in prompt
             assert "name" not in [
                 field for field in ProfileCollectionAgent.REQUIRED_FIELDS
                 if not agent.profile_agent.collected_info.get(field)
@@ -422,6 +340,7 @@ class TestGuidedInitialInterviewController:
             assert "优先追问轻松、温暖、有趣、有成就感的线索" in prompt
             assert "不追问痛苦有多深" in prompt
             assert "不要强行乐观" in prompt
+            assert "始终只使用“您”" in prompt
 
     @pytest.mark.asyncio
     async def test_moves_to_next_question_when_completed(self):
@@ -531,6 +450,7 @@ class TestFreeInterviewQuestionGenerator:
         assert "优先追问轻松、温暖、有趣、有成就感的线索" in prompt
         assert "不追问痛苦有多深" in prompt
         assert "无法自然改写则本轮不使用" in prompt
+        assert "始终只使用“您”" in prompt
 
 
 # ============================================================
@@ -755,9 +675,6 @@ class TestResumeSession:
             # Call resume
             result = await agent._resume_session()
 
-            # Verify address style computed
-            assert agent.address_style == "刘爷爷"
-
             # Verify candidate questions loaded
             assert agent.initial_candidate_questions is not None
             assert len(agent.initial_candidate_questions) == 2
@@ -772,7 +689,7 @@ class TestResumeSession:
                 if call.kwargs.get("trace_node") == "start.guided_resume"
             ]
             assert start_calls
-            assert "当前受控采访要继续的问题" in start_calls[-1].kwargs["prompt"]
+            assert "当前要继续的引导问题" in start_calls[-1].kwargs["prompt"]
             assert "您人生中最早的记忆是什么？" in start_calls[-1].kwargs["prompt"]
             assert result == "欢迎回来"
 

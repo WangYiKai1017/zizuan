@@ -17,6 +17,7 @@ from src.service.agent_runners.base_runner import BaseAgentRunner
 from src.services.image_generation_service import ImageGenerationError, ImageGenerationService
 from src.services.llm_service import LLMService
 from src.services.observability import observability_context, observe_step
+from src.services.user_kb_lock_manager import UserKBLockManager
 
 logger = logging.getLogger(__name__)
 
@@ -77,6 +78,7 @@ class StoryRunner(BaseAgentRunner):
         """Generate and download one image. Returns relative path or empty string on failure."""
         if not prompt:
             return ""
+        temp_path: Path | None = None
         try:
             with observe_step(
                 "story_generation.generate_image",
@@ -84,8 +86,14 @@ class StoryRunner(BaseAgentRunner):
                 input={"prompt": prompt, "filename": filename, "model": image_service.model},
             ) as observation:
                 result = await image_service.generate(prompt)
-                image_abs_path = Path(kb_path) / "stories" / filename
-                await image_service.download(result.url, image_abs_path)
+                temp_dir = Path(kb_path).parent / ".story_generation_temp" / self.user_id
+                temp_path = temp_dir / filename
+                await image_service.download(result.url, temp_path)
+
+                async with UserKBLockManager.get_instance().hold(kb_path):
+                    image_abs_path = Path(kb_path) / "stories" / filename
+                    image_abs_path.parent.mkdir(parents=True, exist_ok=True)
+                    temp_path.replace(image_abs_path)
                 if observation is not None:
                     observation.update(output={
                         "image_url": result.url,
@@ -100,6 +108,12 @@ class StoryRunner(BaseAgentRunner):
         except Exception as e:
             logger.warning("Unexpected error generating image %s: %s", filename, e)
             return ""
+        finally:
+            if temp_path is not None and temp_path.exists():
+                try:
+                    temp_path.unlink()
+                except OSError as e:
+                    logger.warning("Failed to clean temporary story image %s: %s", temp_path, e)
 
     async def _generate_illustrations(
         self,
@@ -137,6 +151,7 @@ class StoryRunner(BaseAgentRunner):
                 operation="generate",
             )):
                 agent = self._create_agent(kb_path)
+                kb_lock_manager = UserKBLockManager.get_instance()
 
                 await self.emitter.emit("task_started", {
                     "user_id": self.user_id,
@@ -145,7 +160,10 @@ class StoryRunner(BaseAgentRunner):
                 })
 
                 with observe_step("story_generation.scan_events", as_type="tool"):
-                    events = agent.load_unconsumed_events()
+                    async with kb_lock_manager.hold(kb_path):
+                        # StoryEvent contains the complete event text, so the LLM
+                        # works from this stable snapshot after the lock is released.
+                        events = agent.load_unconsumed_events()
 
                 available_count = len(events)
                 ready_stage_events = agent.select_ready_stage_events(events)
@@ -188,11 +206,12 @@ class StoryRunner(BaseAgentRunner):
                         story = await agent.generate_story(selected_events, life_stage=life_stage)
 
                         with observe_step("story_generation.save_story", as_type="tool"):
-                            saved = agent.save_story_and_mark_consumed(
-                                story,
-                                selected_events,
-                                life_stage=life_stage,
-                            )
+                            async with kb_lock_manager.hold(kb_path):
+                                saved = agent.save_story_and_mark_consumed(
+                                    story,
+                                    selected_events,
+                                    life_stage=life_stage,
+                                )
                     except StoryStateSaveError as e:
                         failed_stages.append({
                             "life_stage": life_stage,
@@ -268,9 +287,10 @@ class StoryRunner(BaseAgentRunner):
                         # Update state with image paths (failure should not kill the stage)
                         if image_path or illustration_paths:
                             try:
-                                agent.update_story_images(
-                                    saved.story_id, image_path, illustration_paths,
-                                )
+                                async with kb_lock_manager.hold(kb_path):
+                                    agent.update_story_images(
+                                        saved.story_id, image_path, illustration_paths,
+                                    )
                             except Exception as e:
                                 logger.warning(
                                     "Failed to update image paths in state for story %s: %s",

@@ -80,8 +80,6 @@ class InterviewSessionAgent:
         # 会话状态
         self.phase = SessionPhase.INIT
         self.has_profile = False  # 是否完成了初始化
-        self.address_style: str = "您"  # 对被采访者的称呼方式，默认为"您"
-        
         # 子Agent
         self.profile_agent: Optional[ProfileCollectionAgent] = None
         self.interview_agent: Optional[InterviewAgent] = None
@@ -345,10 +343,6 @@ class InterviewSessionAgent:
 
         prefilled_profile = self._parse_user_md(self.user_id)
 
-        # 从预填画像计算称呼方式，传给 ProfileCollectionAgent
-        self.address_style = self._compute_address_style(prefilled_profile)
-        logger.info(f"Computed address_style from prefilled profile: {self.address_style}")
-
         # 创建初始化Agent（不使用时间限制，仅依赖必填字段检查）
         self.profile_agent = ProfileCollectionAgent(
             user_id=self.user_id,
@@ -356,7 +350,6 @@ class InterviewSessionAgent:
             memory_manager=self.memory_manager,
             max_duration_minutes=10**9,
             initial_info=prefilled_profile,
-            address_style=self.address_style,
         )
         
         # 执行初始化流程
@@ -438,10 +431,6 @@ class InterviewSessionAgent:
         
         # 3. 标记已初始化
         self.has_profile = True
-
-        # 3.1 根据收集到的画像信息计算称呼方式
-        self.address_style = self._compute_address_style(self.profile_agent.collected_info or {})
-        logger.info(f"Computed address_style after profile collection: {self.address_style}")
 
         # 4. 启动采访流程
         self.interview_agent = InterviewAgent(
@@ -786,62 +775,3 @@ class InterviewSessionAgent:
             profile_info.get(field)
             for field in ProfileCollectionAgent.REQUIRED_FIELDS
         )
-
-    def _compute_address_style(self, profile_info: dict) -> str:
-        """根据被采访者的年龄、姓名、性别提示计算称呼方式。
-
-        规则：
-        - 年龄 > 70，有姓名：{姓}爷爷 / {姓}奶奶
-        - 年龄 50-70，有姓名：{姓}叔叔 / {姓}阿姨
-        - 年龄 < 50，有姓名：{姓}先生 / {姓}女士
-        - 年龄、姓名或性别未知：“您”
-
-        性别推断仅依赖 family_status中的提示。
-        """
-        if not isinstance(profile_info, dict) or not profile_info:
-            return "您"
-
-        name = profile_info.get("name")
-        age_value = profile_info.get("age")
-        family_status = profile_info.get("family_status") or ""
-        gender_value = str(profile_info.get("gender") or "").strip().lower()
-
-        # 解析年龄
-        if age_value is None or age_value == "":
-            return "您"
-        age_match = re.search(r"\d+", str(age_value))
-        if not age_match:
-            return "您"
-        try:
-            age_int = int(age_match.group())
-        except (TypeError, ValueError):
-            return "您"
-
-        # 姓氏（中文姓名取首字）
-        if not name:
-            return "您"
-        surname = str(name).strip()
-        if not surname:
-            return "您"
-        surname = surname[0]
-
-        # 优先使用外部画像提供的性别；缺失时再从 family_status 保守推断。
-        gender: Optional[str] = None
-        if gender_value in {"女", "女性", "female", "f", "woman"}:
-            gender = "female"
-        elif gender_value in {"男", "男性", "male", "m", "man"}:
-            gender = "male"
-        elif any(token in family_status for token in ["丈夫", "老公"]):
-            gender = "female"
-        elif any(token in family_status for token in ["妻子", "老婆", "夫人"]):
-            gender = "male"
-
-        if gender is None:
-            return "您"
-
-        if age_int > 70:
-            return f"{surname}奶奶" if gender == "female" else f"{surname}爷爷"
-        elif age_int >= 50:
-            return f"{surname}阿姨" if gender == "female" else f"{surname}叔叔"
-        else:
-            return f"{surname}女士" if gender == "female" else f"{surname}先生"

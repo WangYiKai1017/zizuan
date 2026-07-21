@@ -48,7 +48,6 @@ class ProfileCollectionAgent:
         memory_manager: MemoryManager = None,
         max_duration_minutes: int = 5,
         initial_info: Optional[Dict[str, Any]] = None,
-        address_style: str = "您",
     ):
         self.user_id = user_id
         self.llm_service = llm_service or get_llm_service()
@@ -59,8 +58,6 @@ class ProfileCollectionAgent:
             from src.storage.memory_repository import MemoryRepository
             self.memory_manager = MemoryManager(repository=MemoryRepository(file_manager=MarkdownFileManager()))
         self.max_duration_minutes = max_duration_minutes
-        self.address_style = address_style or "您"
-        
         # 会话状态
         self.start_time = datetime.now()
         self.conversation_history: List[Dict] = []
@@ -138,8 +135,7 @@ class ProfileCollectionAgent:
             welcome_prompt = self.prompt_templates.get("profile_welcome", "")
             
             # 注入变量
-            prompt = welcome_prompt.replace("{{elderly_title}}", self.address_style)
-            prompt = prompt.replace("{{collection_state}}", "INIT_PROFILE")
+            prompt = welcome_prompt.replace("{{collection_state}}", "INIT_PROFILE")
             
             welcome_message = await self.llm_service.invoke(
                 prompt=prompt,
@@ -477,7 +473,6 @@ class ProfileCollectionAgent:
         prompt = prompt.replace("{{required_fields}}", json.dumps(missing_required, ensure_ascii=False))
         prompt = prompt.replace("{{optional_fields}}", json.dumps(optional_fields, ensure_ascii=False))
         prompt = prompt.replace("{{last_user_input}}", last_user_input)
-        prompt = prompt.replace("{{elderly_title}}", self.address_style)
         prompt = prompt.replace("{{collected_info}}", json.dumps(self.collected_info, ensure_ascii=False))
         prompt = prompt.replace("{{conversation_history}}", self._format_history())
         

@@ -69,8 +69,6 @@ class InterviewAgent:
             Path(__file__).resolve().parent.parent.parent / "knowledge_base"
         )
 
-        # 称呼方式（后续 Task 4 中全局清理）
-        self.address_style = "您"
         # Resume 上下文（老用户回来时由 InterviewSessionAgent 传入）
         self.resume_context = resume_context or {}
         # 上次对话记录原文（避免 agent 围绕同一问题重复发问）
@@ -255,7 +253,6 @@ class InterviewAgent:
                 memory_context=memory_context,
                 conversation_history=self.conversation_history,
                 candidate_questions=candidate_questions,
-                address_style=self.address_style,
                 previous_conversation_text=self.resume_conversation_text,
             )
             result = decision.result
@@ -272,7 +269,6 @@ class InterviewAgent:
                 current_topic=self.current_topic,
                 topic_turn_count=self.topic_turn_count,
                 topic_history=self.topic_history,
-                address_style=self.address_style,
             )
 
         # 如果LLM决定换话题，更新追踪状态
@@ -414,7 +410,6 @@ class InterviewAgent:
         prompt = ending_prompt.replace("{{session_duration}}", "")
         prompt = prompt.replace("{{total_turns}}", str(len(self.conversation_history)))
         prompt = prompt.replace("{{conversation_history}}", self._format_history())
-        prompt = prompt.replace("{{elderly_title}}", self.address_style or "您")
 
         # 收集本次事件
         collected_events = await self._extract_collected_events()
@@ -474,7 +469,7 @@ class InterviewAgent:
 1. 问题应该基于本次对话中提到但未深入展开的话题线索
 2. 问题应该自然延续本次采访的叙事脉络
 3. 问题应该覆盖不同的话题方向（人物、事件、情感等）
-4. 问题语气应该温和亲切，使用称呼: {self.address_style}
+4. 问题语气应该温和亲切，只使用“您”，不添加先生、女士或亲属式后缀
 5. 优先关注被采访者主动提到但被跳过的话题
 
 对话记录（最近20轮）:

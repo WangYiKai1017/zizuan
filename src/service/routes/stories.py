@@ -21,6 +21,7 @@ from src.service.schemas.requests import UserIdRequest
 from src.service.session_manager import AgentType, SessionConflictError, SessionManager
 from src.service.sse_response import SSEEmitter
 from src.services.observability import start_api_observation
+from src.services.user_kb_lock_manager import UserKBLockManager
 
 router = APIRouter(prefix="/stories", tags=["stories"])
 
@@ -163,7 +164,9 @@ async def list_stories(
     _validate_user_kb(user_id)
     _validate_life_stage(life_stage)
 
-    stories = _list_stories_for_stage(Path(_get_kb_path(user_id)), life_stage)
+    kb_path = Path(_get_kb_path(user_id))
+    async with UserKBLockManager.get_instance().hold(kb_path):
+        stories = _list_stories_for_stage(kb_path, life_stage)
     return JSONResponse(content={
         "user_id": user_id,
         "life_stage": life_stage,

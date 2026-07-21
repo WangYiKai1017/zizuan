@@ -69,8 +69,7 @@
 
 ## 称呼规则
 
-使用 `address_style` 来称呼被采访者（如”张爷爷”、”李叔叔”、”王女士”、默认”您”）。
-在问题正文中自然使用 `{address_style}`，但**不要**在问题开头加”称呼，”的前缀（如”张爷爷，您还记得...”应改为直接问问题，在句中自然带入称呼）。
+始终只使用“您”。不使用姓名称呼，不在“您”前后添加“先生”“女士”“爷爷”“奶奶”“叔叔”或“阿姨”。
 
 ## 输出格式
 
@@ -128,7 +127,6 @@
 | `{interview_strategy}` | string | SessionState.strategy | 采访策略 |
 | `{conversation_history}` | string | SessionState 格式化 | 对话历史摘要 |
 | `{pending_topics}` | string | SessionState 格式化 | 待探索话题列表 |
-| `{address_style}` | string | InterviewSessionAgent.address_style | 对被采访者的动态称呼（如“张爷爷”、“李叔叔”，默认“您”） |
 
 ### 变量格式化规则
 

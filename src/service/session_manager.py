@@ -1,9 +1,13 @@
 """Global session manager — singleton that tracks active agents per user.
 
-Enforces mutual exclusivity: only ONE exclusive agent can be active per user_id at any time.
+Enforces mutual exclusivity between agents that write the same data domain.
 Biography agents (outline/writing) run in a separate slot — they are mutually exclusive
 with each other but NOT with exclusive agents (interview, kb_organizer, story_generation),
 because biography agents only read events and never write them.
+
+Story generation has its own slot. It may run with KB Organizer because their
+filesystem commits are coordinated by UserKBLockManager, but it still conflicts
+with interview and another story generation task.
 """
 import asyncio
 import uuid
@@ -54,10 +58,11 @@ class SessionConflictError(Exception):
 class SessionManager:
     """Singleton session manager.
     
-    Thread-safe via asyncio.Lock. Tracks one active session per user_id.
+    Thread-safe via asyncio.Lock. Tracks compatible active sessions per user_id.
     
     Rules:
-    - acquire() raises SessionConflictError if a DIFFERENT agent type is active
+    - Story generation and KB Organizer may run together for the same user
+    - Interview conflicts with Story generation and KB Organizer
     - For INTERVIEW: if same user calls acquire(INTERVIEW) again, returns existing session_id
     - release() removes the session, freeing the user for another agent
     """
@@ -76,6 +81,7 @@ class SessionManager:
             return
         self._initialized = True
         self._sessions: Dict[str, ActiveSession] = {}  # user_id → exclusive ActiveSession
+        self._story_sessions: Dict[str, ActiveSession] = {}  # user_id → story ActiveSession
         self._biography_sessions: Dict[str, ActiveSession] = {}  # user_id → biography ActiveSession
         self._lock = asyncio.Lock()
     
@@ -92,13 +98,16 @@ class SessionManager:
     async def get_active_session(self, user_id: str) -> Optional[ActiveSession]:
         """Get the active session for a user, or None.
 
-        Checks both the exclusive and biography session stores.
-        Returns the exclusive session if both exist (interview takes priority).
+        Checks exclusive, story, and biography session stores in that order.
+        The exclusive session takes priority when compatible tasks overlap.
         """
         async with self._lock:
             exclusive = self._sessions.get(user_id)
             if exclusive is not None:
                 return exclusive
+            story = self._story_sessions.get(user_id)
+            if story is not None:
+                return story
             return self._biography_sessions.get(user_id)
     
     async def acquire(self, user_id: str, agent_type: AgentType) -> str:
@@ -130,6 +139,31 @@ class SessionManager:
                 )
                 return session_id
 
+            if agent_type == AgentType.STORY_GENERATION:
+                existing_story = self._story_sessions.get(user_id)
+                if existing_story is not None:
+                    raise SessionConflictError(
+                        user_id,
+                        existing_story.agent_type,
+                        existing_story.session_id,
+                    )
+
+                existing = self._sessions.get(user_id)
+                if existing is not None and existing.agent_type != AgentType.KB_ORGANIZER:
+                    raise SessionConflictError(
+                        user_id,
+                        existing.agent_type,
+                        existing.session_id,
+                    )
+
+                self._story_sessions[user_id] = ActiveSession(
+                    session_id=session_id,
+                    user_id=user_id,
+                    agent_type=agent_type,
+                    started_at=datetime.now(timezone.utc),
+                )
+                return session_id
+
             # Exclusive slot: conflicts with all other exclusive agents
             existing = self._sessions.get(user_id)
             if existing is not None:
@@ -138,6 +172,14 @@ class SessionManager:
                     return existing.session_id
                 # Any other case → conflict
                 raise SessionConflictError(user_id, existing.agent_type, existing.session_id)
+
+            existing_story = self._story_sessions.get(user_id)
+            if existing_story is not None and agent_type != AgentType.KB_ORGANIZER:
+                raise SessionConflictError(
+                    user_id,
+                    existing_story.agent_type,
+                    existing_story.session_id,
+                )
 
             self._sessions[user_id] = ActiveSession(
                 session_id=session_id,
@@ -166,6 +208,11 @@ class SessionManager:
                 del self._biography_sessions[user_id]
                 return True
 
+            story = self._story_sessions.get(user_id)
+            if story is not None and (session_id is None or story.session_id == session_id):
+                del self._story_sessions[user_id]
+                return True
+
             # Try exclusive sessions
             existing = self._sessions.get(user_id)
             if existing is None:
@@ -181,12 +228,15 @@ class SessionManager:
         Used when deleting a user to ensure no orphaned session state remains.
 
         Returns:
-            Number of sessions released (0, 1, or 2).
+            Number of sessions released (0 to 3).
         """
         async with self._lock:
             count = 0
             if user_id in self._biography_sessions:
                 del self._biography_sessions[user_id]
+                count += 1
+            if user_id in self._story_sessions:
+                del self._story_sessions[user_id]
                 count += 1
             if user_id in self._sessions:
                 del self._sessions[user_id]

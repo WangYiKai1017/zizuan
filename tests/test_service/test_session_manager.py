@@ -188,3 +188,55 @@ async def test_biography_release_does_not_affect_interview():
     assert session is not None
     assert session.agent_type == AgentType.INTERVIEW
     assert session.session_id == interview_sid
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("first", "second"),
+    [
+        (AgentType.STORY_GENERATION, AgentType.KB_ORGANIZER),
+        (AgentType.KB_ORGANIZER, AgentType.STORY_GENERATION),
+    ],
+)
+async def test_story_and_kb_organizer_can_run_together(first, second):
+    """Story snapshots and Organizer workspace processing may overlap."""
+    sm = SessionManager.get_instance()
+
+    first_sid = await sm.acquire("user001", first)
+    second_sid = await sm.acquire("user001", second)
+
+    assert first_sid != second_sid
+
+
+@pytest.mark.asyncio
+async def test_releasing_organizer_does_not_release_concurrent_story():
+    sm = SessionManager.get_instance()
+    story_sid = await sm.acquire("user001", AgentType.STORY_GENERATION)
+    organizer_sid = await sm.acquire("user001", AgentType.KB_ORGANIZER)
+
+    assert await sm.release("user001", organizer_sid) is True
+
+    session = await sm.get_active_session("user001")
+    assert session is not None
+    assert session.agent_type == AgentType.STORY_GENERATION
+    assert session.session_id == story_sid
+
+
+@pytest.mark.asyncio
+async def test_interview_still_conflicts_with_story_generation():
+    sm = SessionManager.get_instance()
+    await sm.acquire("user001", AgentType.STORY_GENERATION)
+
+    with pytest.raises(SessionConflictError) as exc_info:
+        await sm.acquire("user001", AgentType.INTERVIEW)
+
+    assert exc_info.value.active_type == AgentType.STORY_GENERATION
+
+
+@pytest.mark.asyncio
+async def test_second_story_generation_still_conflicts():
+    sm = SessionManager.get_instance()
+    await sm.acquire("user001", AgentType.STORY_GENERATION)
+
+    with pytest.raises(SessionConflictError):
+        await sm.acquire("user001", AgentType.STORY_GENERATION)

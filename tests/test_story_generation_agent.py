@@ -51,7 +51,7 @@ def make_agent(kb_path: Path, results=None) -> StoryGenerationAgent:
     )
 
 
-def test_load_unconsumed_events_filters_consumed_paths(tmp_path: Path) -> None:
+def test_load_unconsumed_events_migrates_legacy_paths_to_fingerprints(tmp_path: Path) -> None:
     kb = tmp_path / "user001"
     write_event(kb, "events/childhood/old.md", "旧事件", "1950")
     write_event(kb, "events/childhood/renamed.md", "旧事件", "1950")
@@ -66,7 +66,12 @@ def test_load_unconsumed_events_filters_consumed_paths(tmp_path: Path) -> None:
 
     paths = [event.path for event in events]
     assert "events/childhood/old.md" not in paths
-    assert "events/childhood/renamed.md" in paths
+    assert "events/childhood/renamed.md" not in paths
+
+    state = json.loads(
+        (state_dir / ".story_state.json").read_text(encoding="utf-8")
+    )
+    assert len(state["generated_event_fingerprints"]) == 1
 
 
 def test_select_events_uses_earliest_15(tmp_path: Path) -> None:
@@ -131,11 +136,44 @@ def test_save_story_then_marks_events_consumed(tmp_path: Path) -> None:
     assert saved.story_id.startswith("childhood_story_")
     state = json.loads((kb / "stories" / ".story_state.json").read_text(encoding="utf-8"))
     assert len(state["generated_event_paths"]) == REQUIRED_EVENT_COUNT
+    assert len(state["generated_event_fingerprints"]) == REQUIRED_EVENT_COUNT
     assert state["stories"][0]["story_id"] == saved.story_id
     assert state["stories"][0]["file_path"] == saved.story_path
     assert state["stories"][0]["life_stage"] == "childhood"
     story_text = (kb / saved.story_path).read_text(encoding="utf-8")
     assert "来源时期：童年时期" in story_text
+
+
+def test_event_fingerprint_survives_move_but_changes_after_rewrite(tmp_path: Path) -> None:
+    kb = tmp_path / "user001"
+    original_path = kb / "events/childhood/original.md"
+    write_event(kb, "events/childhood/original.md", "院子里的往事", "1950")
+    content = original_path.read_text(encoding="utf-8")
+    fingerprint = StoryGenerationAgent._event_fingerprint(content)
+
+    state_dir = kb / "stories"
+    state_dir.mkdir(parents=True)
+    (state_dir / ".story_state.json").write_text(
+        json.dumps({
+            "generated_event_paths": ["events/childhood/original.md"],
+            "generated_event_fingerprints": [fingerprint],
+            "stories": [],
+        }, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    moved_path = kb / "events/youth/moved.md"
+    moved_path.parent.mkdir(parents=True)
+    original_path.rename(moved_path)
+
+    agent = make_agent(kb)
+    assert agent.load_unconsumed_events() == []
+
+    moved_path.write_text(content + "\n新增的明确细节。\n", encoding="utf-8")
+    events = agent.load_unconsumed_events()
+
+    assert [event.path for event in events] == ["events/youth/moved.md"]
+    assert events[0].fingerprint != fingerprint
 
 
 @pytest.mark.asyncio

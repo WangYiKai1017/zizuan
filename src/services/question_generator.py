@@ -226,7 +226,6 @@ class QuestionGenerator:
         current_topic: Optional[str] = None,
         topic_turn_count: int = 0,
         topic_history: Optional[List[str]] = None,
-        address_style: str = "您",
     ) -> QuestionResult:
         """
         生成下一个问题（InterviewAgent专用接口）
@@ -276,9 +275,8 @@ class QuestionGenerator:
 ## 候选问题（家属提前准备但尚未询问）
 {candidate_questions_formatted}
 {topic_context}
-## 对被采访者的称呼
-{address_style or "您"}
-在问题正文中可以自然地使用此称呼（如"{address_style}，那时候..."），但不要在问题开头加"称呼，"的前缀。
+## 称呼规则
+始终只使用“您”。不使用姓名称呼，不在“您”前后添加“先生”“女士”“爷爷”“奶奶”“叔叔”或“阿姨”。
 
 ## 规则
 1. 如果某个候选问题与用户刚才的回答明显相关，选择该问题并改写成自然、温和的追问。

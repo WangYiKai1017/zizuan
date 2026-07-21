@@ -6,6 +6,7 @@ event files in a user's knowledge base.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
@@ -42,6 +43,7 @@ class StoryEvent:
     time: str
     event_type: str
     content: str
+    fingerprint: str
 
 
 @dataclass(frozen=True)
@@ -66,10 +68,13 @@ class SavedStory:
     story_path: str
     life_stage: str
     event_paths: list[str]
+    event_fingerprints: list[str] = None
     image_path: str = ""
     illustration_paths: list[str] = None
 
     def __post_init__(self):
+        if self.event_fingerprints is None:
+            object.__setattr__(self, "event_fingerprints", [])
         if self.illustration_paths is None:
             object.__setattr__(self, "illustration_paths", [])
 
@@ -102,8 +107,11 @@ class StoryGenerationAgent:
 
     def load_unconsumed_events(self) -> list[StoryEvent]:
         """Scan event markdown files and return those not yet consumed."""
-        consumed_paths = set(self._load_state().get("generated_event_paths", []))
-        events = []
+        state = self._load_state()
+        consumed_paths = set(state.get("generated_event_paths", []))
+        consumed_fingerprints = set(state.get("generated_event_fingerprints", []))
+        uses_fingerprints = state.get("_fingerprint_state_present", True)
+        events: list[StoryEvent] = []
 
         events_root = self.kb_path / "events"
         if not events_root.exists():
@@ -113,14 +121,13 @@ class StoryGenerationAgent:
             if event_file.name.startswith("."):
                 continue
             rel_path = event_file.relative_to(self.kb_path).as_posix()
-            if rel_path in consumed_paths:
-                continue
             try:
                 content = event_file.read_text(encoding="utf-8")
             except Exception as e:
                 logger.warning("Failed to read event file %s: %s", rel_path, e)
                 continue
 
+            fingerprint = self._event_fingerprint(content)
             events.append(
                 StoryEvent(
                     path=rel_path,
@@ -129,10 +136,24 @@ class StoryGenerationAgent:
                     time=self._extract_field(content, "时间"),
                     event_type=self._extract_field(content, "事件类型"),
                     content=content,
+                    fingerprint=fingerprint,
                 )
             )
 
-        return sorted(events, key=self._event_sort_key)
+        if not uses_fingerprints:
+            consumed_fingerprints.update(
+                event.fingerprint
+                for event in events
+                if event.path in consumed_paths
+            )
+            state["generated_event_fingerprints"] = sorted(consumed_fingerprints)
+            self._save_state(state)
+
+        unconsumed = [
+            event for event in events
+            if event.fingerprint not in consumed_fingerprints
+        ]
+        return sorted(unconsumed, key=self._event_sort_key)
 
     def select_events(self, events: list[StoryEvent]) -> list[StoryEvent]:
         """Select the earliest required events for one story."""
@@ -216,6 +237,7 @@ class StoryGenerationAgent:
         story_rel_path = f"stories/{story_id}.md"
         story_abs_path = self.kb_path / story_rel_path
         event_paths = [event.path for event in events]
+        event_fingerprints = [event.fingerprint for event in events]
         illustration_paths = illustration_paths or []
 
         content = self._build_story_markdown(
@@ -233,6 +255,7 @@ class StoryGenerationAgent:
                 story_path=story_rel_path,
                 life_stage=life_stage,
                 event_paths=event_paths,
+                event_fingerprints=event_fingerprints,
                 created_at=now.isoformat(),
                 image_path=image_path,
                 image_prompt=story.image_prompt,
@@ -250,31 +273,61 @@ class StoryGenerationAgent:
             story_path=story_rel_path,
             life_stage=life_stage,
             event_paths=event_paths,
+            event_fingerprints=event_fingerprints,
             image_path=image_path,
             illustration_paths=illustration_paths,
         )
 
     def _load_state(self) -> dict[str, Any]:
         if not self.state_path.exists():
-            return {"generated_event_paths": [], "stories": []}
+            return {
+                "generated_event_paths": [],
+                "generated_event_fingerprints": [],
+                "stories": [],
+                "_fingerprint_state_present": True,
+            }
         try:
             data = json.loads(self.state_path.read_text(encoding="utf-8"))
         except Exception:
             logger.warning("Story state file is invalid, rebuilding empty state: %s", self.state_path)
-            return {"generated_event_paths": [], "stories": []}
+            return {
+                "generated_event_paths": [],
+                "generated_event_fingerprints": [],
+                "stories": [],
+                "_fingerprint_state_present": True,
+            }
         if not isinstance(data, dict):
-            return {"generated_event_paths": [], "stories": []}
+            return {
+                "generated_event_paths": [],
+                "generated_event_fingerprints": [],
+                "stories": [],
+                "_fingerprint_state_present": True,
+            }
         generated = data.get("generated_event_paths")
+        generated_fingerprints = data.get("generated_event_fingerprints")
         stories = data.get("stories")
         return {
             "generated_event_paths": generated if isinstance(generated, list) else [],
+            "generated_event_fingerprints": (
+                generated_fingerprints
+                if isinstance(generated_fingerprints, list)
+                else []
+            ),
             "stories": stories if isinstance(stories, list) else [],
+            "_fingerprint_state_present": isinstance(generated_fingerprints, list),
         }
 
     def _save_state(self, state: dict[str, Any]) -> None:
         self.stories_dir.mkdir(parents=True, exist_ok=True)
         tmp_path = self.state_path.with_suffix(".json.tmp")
-        tmp_path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+        persisted_state = {
+            key: value for key, value in state.items()
+            if not key.startswith("_")
+        }
+        tmp_path.write_text(
+            json.dumps(persisted_state, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
         tmp_path.replace(self.state_path)
 
     def update_story_images(
@@ -299,6 +352,7 @@ class StoryGenerationAgent:
         story_path: str,
         life_stage: str,
         event_paths: list[str],
+        event_fingerprints: list[str],
         created_at: str,
         image_path: str = "",
         image_prompt: str = "",
@@ -307,9 +361,27 @@ class StoryGenerationAgent:
     ) -> None:
         state = self._load_state()
         existing = list(dict.fromkeys(state.get("generated_event_paths", [])))
+        existing_fingerprints = list(dict.fromkeys(
+            state.get("generated_event_fingerprints", [])
+        ))
+
+        if not state.get("_fingerprint_state_present", True):
+            for path in existing:
+                event_path = self.kb_path / path
+                try:
+                    content = event_path.read_text(encoding="utf-8")
+                except OSError:
+                    continue
+                fingerprint = self._event_fingerprint(content)
+                if fingerprint not in existing_fingerprints:
+                    existing_fingerprints.append(fingerprint)
+
         for path in event_paths:
             if path not in existing:
                 existing.append(path)
+        for fingerprint in event_fingerprints:
+            if fingerprint not in existing_fingerprints:
+                existing_fingerprints.append(fingerprint)
 
         stories = state.get("stories", [])
         stories.append({
@@ -317,6 +389,7 @@ class StoryGenerationAgent:
             "file_path": story_path,
             "life_stage": life_stage,
             "event_paths": event_paths,
+            "event_fingerprints": event_fingerprints,
             "created_at": created_at,
             "image_path": image_path,
             "image_prompt": image_prompt,
@@ -326,9 +399,15 @@ class StoryGenerationAgent:
 
         self._save_state({
             "generated_event_paths": existing,
+            "generated_event_fingerprints": existing_fingerprints,
             "stories": stories,
             "updated_at": created_at,
         })
+
+    @staticmethod
+    def _event_fingerprint(content: str) -> str:
+        """Return a path-independent identity for one exact event version."""
+        return hashlib.sha256(content.encode("utf-8")).hexdigest()
 
     def _build_system_prompt(self, life_stage: str = "") -> str:
         stage_label = LIFE_STAGE_LABELS.get(life_stage, "同一人生时期")

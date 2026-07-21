@@ -118,7 +118,6 @@ class GuidedInitialInterviewController:
         memory_context: Optional[str] = None,
         conversation_history: Optional[List[Dict]] = None,
         candidate_questions: Optional[List[Dict[str, str]]] = None,
-        address_style: str = "您",
         previous_conversation_text: str = "",
     ) -> GuidedDecision:
         """Generate the next guided question and update persisted progress."""
@@ -139,7 +138,7 @@ class GuidedInitialInterviewController:
             self.save_state(state)
             return GuidedDecision(
                 result=QuestionResult(
-                    question=self._free_interview_transition(address_style),
+                    question=self._free_interview_transition(),
                     source="generated",
                     candidate_question_id=None,
                     topic_switched=True,
@@ -165,7 +164,7 @@ class GuidedInitialInterviewController:
                     "followup_count": before_state.get("current_question_followup_count", 0),
                 },
             ) as observation:
-                result = self._advance_to_next_question(state, address_style)
+                result = self._advance_to_next_question(state)
                 if observation is not None:
                     observation.update(output={
                         "question": result.question,
@@ -184,7 +183,6 @@ class GuidedInitialInterviewController:
             state=state,
             current_question=current_question,
             candidate_questions=candidate_questions,
-            address_style=address_style,
             previous_conversation_text=previous_conversation_text,
         )
 
@@ -309,7 +307,7 @@ class GuidedInitialInterviewController:
                 return question
         return self._first_uncompleted_question(list(completed))
 
-    def _advance_to_next_question(self, state: Dict[str, Any], address_style: str) -> QuestionResult:
+    def _advance_to_next_question(self, state: Dict[str, Any]) -> QuestionResult:
         current_question = self._current_question(state)
         if current_question:
             state["completed_question_ids"] = self._append_unique(
@@ -337,14 +335,14 @@ class GuidedInitialInterviewController:
         state["current_question_id"] = None
         self.save_state(state)
         return QuestionResult(
-            question=self._free_interview_transition(address_style),
+            question=self._free_interview_transition(),
             source="generated",
             candidate_question_id=None,
             topic_switched=True,
             new_topic="自由采访",
         )
 
-    def _free_interview_transition(self, address_style: str) -> str:
+    def _free_interview_transition(self) -> str:
         return (
             "刚才这些回忆已经把人生几个重要阶段都串起来了。"
             "接下来我们可以顺着您最想多讲的地方慢慢展开，您现在最想从哪段经历继续聊？"
@@ -357,7 +355,6 @@ class GuidedInitialInterviewController:
         state: Dict[str, Any],
         current_question: Dict[str, str],
         candidate_questions: Optional[List[Dict[str, str]]],
-        address_style: str,
         previous_conversation_text: str = "",
     ) -> str:
         candidate_questions_formatted = "无"
@@ -421,6 +418,9 @@ class GuidedInitialInterviewController:
 ## 决策规则
 
 **核心原则：默认行为是继续深挖当前问题，而不是切换到下一个预设问题。**
+
+### 称呼规则
+- 始终只使用“您”，不使用姓名或“先生、女士、爷爷、奶奶、叔叔、阿姨”等称呼
 
 ### 回忆方向
 - 用户的回答里同时有轻松温暖和困难失落的线索时，优先追问轻松、温暖、有趣、有成就感的线索

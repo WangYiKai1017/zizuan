@@ -1,9 +1,34 @@
 from contextlib import contextmanager
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from src.agents.profile_collection_agent import ProfileCollectionAgent
+
+
+def test_runtime_prompts_do_not_contain_composite_address_examples() -> None:
+    prompt_root = Path(__file__).resolve().parent.parent / "Prompts"
+    content = "\n".join(
+        (prompt_root / name).read_text(encoding="utf-8")
+        for name in (
+            "ProfileCollection-Prompt.md",
+            "QuestionGenerator-Prompt.md",
+            "SessionEndGuide-Prompt.md",
+        )
+    )
+
+    assert "{{elderly_title}}" not in content
+    for suffix in ("先生", "女士", "爷爷", "奶奶", "叔叔", "阿姨"):
+        assert f"您{suffix}" not in content
+
+    for legacy_address_example in (
+        "秀兰阿姨",
+        "王奶奶",
+        "李爷爷",
+        "老人家，您",
+    ):
+        assert legacy_address_example not in content
 
 
 @pytest.mark.asyncio

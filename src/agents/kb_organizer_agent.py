@@ -4,6 +4,7 @@
 """
 
 import logging
+import shutil
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
@@ -17,6 +18,7 @@ from src.models.kb_organizer_state import (
 from src.services.kb_organization_service import KBOrganizationService
 from src.services.llm_service import LLMService
 from src.services.observability import observe_step
+from src.services.user_kb_lock_manager import UserKBLockManager
 from src.storage.file_operations import FileOperations
 
 logger = logging.getLogger(__name__)
@@ -159,7 +161,13 @@ class KBOrganizerAgent:
 
     async def _do_setup_workspace(self, task: OrganizerTask, state: KBOrganizerState) -> None:
         """创建工作副本并扫描文件清单"""
-        FileOperations.copy_directory(state.source_path, state.working_path)
+        # stories/ is a concurrent output domain. It is refreshed under the
+        # short commit lock immediately before the final directory swap.
+        FileOperations.copy_directory(
+            state.source_path,
+            state.working_path,
+            ignore_names=("stories",),
+        )
         source_fm = self.organization_service.source_file_manager
         for category in ["events", "people", "timeline", "themes"]:
             items = source_fm.list_files(directory=category, recursive=True)
@@ -310,7 +318,20 @@ class KBOrganizerAgent:
         """原子替换：备份原目录，工作副本取代"""
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         backup_path = f"{state.source_path}_{timestamp}"
-        FileOperations.rename_directory(state.source_path, backup_path)
-        FileOperations.rename_directory(state.working_path, state.source_path)
+        async with UserKBLockManager.get_instance().hold(state.source_path):
+            self._refresh_story_outputs(state.source_path, state.working_path)
+            FileOperations.rename_directory(state.source_path, backup_path)
+            FileOperations.rename_directory(state.working_path, state.source_path)
         state.completed_at = datetime.now()
         task.result = f"原目录已备份为 {backup_path}，整理完成"
+
+    @staticmethod
+    def _refresh_story_outputs(source_path: str, working_path: str) -> None:
+        """Carry the latest concurrently written story files into the swap."""
+        source_stories = Path(source_path) / "stories"
+        working_stories = Path(working_path) / "stories"
+
+        if working_stories.exists():
+            shutil.rmtree(working_stories)
+        if source_stories.exists():
+            shutil.copytree(source_stories, working_stories)

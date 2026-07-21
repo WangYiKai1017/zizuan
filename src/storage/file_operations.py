@@ -63,12 +63,17 @@ class FileOperations:
         return count
 
     @staticmethod
-    def copy_directory(source: str, target: str) -> str:
+    def copy_directory(
+        source: str,
+        target: str,
+        ignore_names: tuple[str, ...] = (),
+    ) -> str:
         """递归复制目录
 
         Args:
             source: 源目录路径
             target: 目标目录路径（不能已存在）
+            ignore_names: 复制时忽略的顶层名称或 glob pattern
 
         Returns:
             目标目录路径
@@ -81,7 +86,8 @@ class FileOperations:
             raise FileNotFoundError(f"源目录不存在: {source}")
         if os.path.exists(target):
             raise FileExistsError(f"目标目录已存在: {target}")
-        shutil.copytree(source, target)
+        ignore = shutil.ignore_patterns(*ignore_names) if ignore_names else None
+        shutil.copytree(source, target, ignore=ignore)
         file_count = sum(len(files) for _, _, files in os.walk(target))
         logger.info(f"已复制目录: {source} -> {target} ({file_count} 个文件)")
         return target
@@ -122,4 +128,3 @@ class FileOperations:
         """
         search_path = os.path.join(directory, pattern)
         return sorted(glob.glob(search_path, recursive=False))
-
