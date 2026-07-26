@@ -1,6 +1,6 @@
 """传记写作 Agent
 
-负责将已确认的章节大纲转化为第一人称口述体传记散文。
+负责将已确认的章节大纲转化为第一人称自传章节。
 逐章写作：收集材料 -> 生成初稿 -> 自我审阅 -> 保存 -> 循环下一章。
 全部完成后合并为完整传记。
 """
@@ -173,7 +173,7 @@ class BiographyWritingAgent:
     async def write_chapter_node(self, state: WritingAgentState) -> dict:
         """LLM 撰写章节
 
-        调用 biography_chapter_writer 模板，生成第一人称口述体散文。
+        调用 biography_chapter_writer 模板，生成第一人称自传章节。
         """
         chapter = state.current_chapter
         logger.info(f"=== [write_chapter] 撰写章节: {chapter.chapter_title} ===")
