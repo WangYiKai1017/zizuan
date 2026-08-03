@@ -5,8 +5,10 @@ import logging
 from pathlib import Path
 
 from src.agents.story_generation_agent import (
+    FIRST_STORY_EVENT_COUNT,
     LIFE_STAGE_LABELS,
     REQUIRED_EVENT_COUNT,
+    SUBSEQUENT_STORY_EVENT_COUNT,
     StoryGenerationAgent,
     StoryOutputInvalidError,
     StoryStateSaveError,
@@ -156,6 +158,8 @@ class StoryRunner(BaseAgentRunner):
                 await self.emitter.emit("task_started", {
                     "user_id": self.user_id,
                     "required_event_count": REQUIRED_EVENT_COUNT,
+                    "first_story_required_event_count": FIRST_STORY_EVENT_COUNT,
+                    "subsequent_story_required_event_count": SUBSEQUENT_STORY_EVENT_COUNT,
                     "mode": "life_stage_batches",
                 })
 
@@ -163,16 +167,28 @@ class StoryRunner(BaseAgentRunner):
                     async with kb_lock_manager.hold(kb_path):
                         # StoryEvent contains the complete event text, so the LLM
                         # works from this stable snapshot after the lock is released.
+                        required_event_counts = agent.required_event_counts_by_stage()
                         events = agent.load_unconsumed_events()
 
                 available_count = len(events)
-                ready_stage_events = agent.select_ready_stage_events(events)
+                grouped_events = agent.group_events_by_stage(events)
+                available_event_counts = {
+                    stage: len(stage_events)
+                    for stage, stage_events in grouped_events.items()
+                }
+                ready_stage_events = agent.select_ready_stage_events(
+                    events,
+                    required_event_counts,
+                )
                 ready_stages = list(ready_stage_events.keys())
                 await self.emitter.emit("scanning", {
                     "step": "scanning",
                     "message": f"扫描到 {available_count} 个未生成故事的事件，{len(ready_stages)} 个时期已满足生成条件",
                     "available_events": available_count,
-                    "required_events": REQUIRED_EVENT_COUNT,
+                    "available_event_counts_by_stage": available_event_counts,
+                    "first_story_required_events": FIRST_STORY_EVENT_COUNT,
+                    "subsequent_story_required_events": SUBSEQUENT_STORY_EVENT_COUNT,
+                    "required_event_counts_by_stage": required_event_counts,
                     "ready_life_stages": ready_stages,
                 })
 
@@ -180,8 +196,11 @@ class StoryRunner(BaseAgentRunner):
                     await self.emitter.emit("failed", {
                         "status": "failed",
                         "error_code": "INSUFFICIENT_EVENTS",
-                        "message": "没有任何时期达到15个未生成故事的事件",
-                        "required_events": REQUIRED_EVENT_COUNT,
+                        "message": "没有任何时期达到当前故事生成门槛（首篇 3 个事件，后续 10 个事件）",
+                        "first_story_required_events": FIRST_STORY_EVENT_COUNT,
+                        "subsequent_story_required_events": SUBSEQUENT_STORY_EVENT_COUNT,
+                        "required_event_counts_by_stage": required_event_counts,
+                        "available_event_counts_by_stage": available_event_counts,
                     })
                     await self.emitter.emit_done("任务失败")
                     return
@@ -195,7 +214,7 @@ class StoryRunner(BaseAgentRunner):
                     stage_label = LIFE_STAGE_LABELS.get(life_stage, life_stage)
                     await self.emitter.emit("generating", {
                         "step": "generating",
-                        "message": f"正在根据{stage_label}最早的 15 个事件生成故事...",
+                        "message": f"正在根据{stage_label}最早的 {len(selected_events)} 个事件生成故事...",
                         "life_stage": life_stage,
                         "life_stage_label": stage_label,
                         "selected_event_count": len(selected_events),

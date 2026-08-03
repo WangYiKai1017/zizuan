@@ -21,7 +21,10 @@ from src.services.observability import observe_step
 logger = logging.getLogger(__name__)
 
 
-REQUIRED_EVENT_COUNT = 15
+FIRST_STORY_EVENT_COUNT = 3
+SUBSEQUENT_STORY_EVENT_COUNT = 10
+# Backward-compatible default for callers that select a generic event batch.
+REQUIRED_EVENT_COUNT = SUBSEQUENT_STORY_EVENT_COUNT
 STORY_STATE_FILENAME = ".story_state.json"
 MAX_GENERATION_RETRIES = 1
 LIFE_STAGE_ORDER = ("childhood", "youth", "middle_age", "elderly")
@@ -155,9 +158,51 @@ class StoryGenerationAgent:
         ]
         return sorted(unconsumed, key=self._event_sort_key)
 
-    def select_events(self, events: list[StoryEvent]) -> list[StoryEvent]:
+    def select_events(
+        self,
+        events: list[StoryEvent],
+        required_event_count: int = REQUIRED_EVENT_COUNT,
+    ) -> list[StoryEvent]:
         """Select the earliest required events for one story."""
-        return events[:REQUIRED_EVENT_COUNT]
+        return events[:required_event_count]
+
+    @staticmethod
+    def _story_matches_stage(story: dict[str, Any], life_stage: str) -> bool:
+        if story.get("life_stage") == life_stage:
+            return True
+        prefix = f"{life_stage}_story_"
+        for key in ("story_id", "file_path", "story_path"):
+            value = story.get(key)
+            if isinstance(value, str) and Path(value).stem.startswith(prefix):
+                return True
+        return False
+
+    def has_generated_story_for_stage(
+        self,
+        life_stage: str,
+        state: dict[str, Any] | None = None,
+    ) -> bool:
+        """Return whether this life stage already has a persisted story."""
+        current_state = state if state is not None else self._load_state()
+        stories = current_state.get("stories", [])
+        if any(
+            isinstance(story, dict) and self._story_matches_stage(story, life_stage)
+            for story in stories
+        ):
+            return True
+        return any(self.stories_dir.glob(f"{life_stage}_story_*.md"))
+
+    def required_event_counts_by_stage(self) -> dict[str, int]:
+        """Return the current generation threshold for every life stage."""
+        state = self._load_state()
+        return {
+            stage: (
+                SUBSEQUENT_STORY_EVENT_COUNT
+                if self.has_generated_story_for_stage(stage, state)
+                else FIRST_STORY_EVENT_COUNT
+            )
+            for stage in LIFE_STAGE_ORDER
+        }
 
     def group_events_by_stage(self, events: list[StoryEvent]) -> dict[str, list[StoryEvent]]:
         """Group events by life stage from their file paths."""
@@ -173,13 +218,15 @@ class StoryGenerationAgent:
     def select_ready_stage_events(
         self,
         events: list[StoryEvent],
+        required_event_counts: dict[str, int] | None = None,
     ) -> dict[str, list[StoryEvent]]:
-        """Select at most one 15-event batch for each ready life stage."""
+        """Select at most one threshold-sized batch for each ready life stage."""
         grouped = self.group_events_by_stage(events)
+        thresholds = required_event_counts or self.required_event_counts_by_stage()
         return {
-            stage: self.select_events(stage_events)
+            stage: self.select_events(stage_events, thresholds[stage])
             for stage, stage_events in grouped.items()
-            if len(stage_events) >= REQUIRED_EVENT_COUNT
+            if len(stage_events) >= thresholds[stage]
         }
 
     async def generate_story(
@@ -423,13 +470,13 @@ class StoryGenerationAgent:
 
         return f"""你是一位擅长整理口述回忆的中文写作者。
 
-请把给定的 15 个事件整理成一篇独立的故事，而不是传记章节、年表或资料清单。本次材料都来自{stage_label}，故事要围绕这个时期形成一个聚合主题，不要扩展成完整人生回顾。
+请把给定的事件整理成一篇独立的故事，而不是传记章节、年表或资料清单。本次材料都来自{stage_label}，故事要围绕这个时期形成一个聚合主题，不要扩展成完整人生回顾。
 
 要求：
 - 使用第一人称"我"。
 - 先理解这些事件共同呈现的主题，再组织成 4 到 7 个自然段落。
 - 不要按年份逐条扩写，不要写成"一年一个事件"的流水账，不要每段都用年份开头。
-- 不要求 15 个事件逐个显性展开；重要事件重点写，次要事件可以合并为背景、转折或变化。
+- 不要求所有事件逐个显性展开；重要事件重点写，次要事件可以合并为背景、转折或变化。
 - 不得忽略核心事件，但可以压缩、合并、概括次要事件。
 - 只能依据事件材料写作；可以自然衔接和概括主题，但不要编造材料中没有的具体人物、地点、物件、对白、动作细节、心理活动或因果。
 - 不要主动跳到其他人生阶段；结尾可以有短暂回望或总结，但不要引入材料外的新事件。
@@ -466,7 +513,7 @@ JSON 格式：
                     event.content.strip(),
                 ])
             )
-        return f"请根据下面 15 个来自{stage_label}的事件生成一篇聚合故事：\n\n" + "\n\n---\n\n".join(blocks)
+        return f"请根据下面 {len(events)} 个来自{stage_label}的事件生成一篇聚合故事：\n\n" + "\n\n---\n\n".join(blocks)
 
     def _parse_story_result(self, result: LLMCallResult) -> GeneratedStory:
         if not result.success:

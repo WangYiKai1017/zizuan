@@ -431,7 +431,7 @@
           <div class="step" data-step="prefill"><span class="num">2</span><div><div class="step-title">画像预填</div><div class="step-desc">写入微信侧姓名、年龄、出生日期、性别</div></div><span class="badge">待预填</span></div>
           <div class="step" data-step="interview"><span class="num">3</span><div><div class="step-title">采访会话</div><div class="step-desc">启动会话、发送消息、结束并保存素材</div></div><span class="badge">待开始</span></div>
           <div class="step" data-step="kb"><span class="num">4</span><div><div class="step-title">知识库整理</div><div class="step-desc">运行去重、冲突检测、链接修复等整理任务</div></div><span class="badge">待运行</span></div>
-          <div class="step" data-step="stories"><span class="num">5</span><div><div class="step-title">故事生成</div><div class="step-desc">每个时期满 15 个未消费事件生成一篇故事</div></div><span class="badge">待生成</span></div>
+          <div class="step" data-step="stories"><span class="num">5</span><div><div class="step-title">故事生成</div><div class="step-desc">每个时期首篇需 3 个事件，后续每篇需 10 个</div></div><span class="badge">待生成</span></div>
           <div class="step" data-step="outline"><span class="num">6</span><div><div class="step-title">大纲生成</div><div class="step-desc">扫描材料并生成传记章节大纲</div></div><span class="badge">待生成</span></div>
           <div class="step" data-step="confirm"><span class="num">7</span><div><div class="step-title">确认章节</div><div class="step-desc">将 draft 章节标记为 confirmed，写作 Agent 才会处理</div></div><span class="badge">待确认</span></div>
           <div class="step" data-step="writing"><span class="num">8</span><div><div class="step-title">传记写作</div><div class="step-desc">生成章节文件并合并完整传记</div></div><span class="badge">待写作</span></div>
@@ -563,7 +563,7 @@
         <button onclick="openStoriesFolder()"><i data-lucide="folder-open"></i>查看 stories/</button>
         <span id="storySpinner" class="spinner"></span>
       </div>
-      <p class="hint">自动扫描各时期，每个已满 15 个未消费 event 的时期最多生成一篇第一人称故事；生成后可在文件浏览里查看 stories/。</p>
+      <p class="hint">自动扫描各时期：首篇满 3 个未消费 event、后续满 10 个时，该时期最多生成一篇第一人称故事；生成后可在文件浏览里查看 stories/。</p>
       <div id="storyLog" class="log"></div>
     </div>
   </div>
@@ -944,7 +944,7 @@ async function runStoryGeneration() {
     await ensureBackend('故事生成');
     for await (const ev of sseStream(api() + '/api/stories/generate', { user_id: uid() })) {
       if (ev.event === 'task_started') {
-        logLine(log, 'info', `任务已启动，每个时期需要 ${ev.data.required_event_count ?? 15} 个事件`);
+        logLine(log, 'info', `任务已启动：每个时期首篇需要 ${ev.data.first_story_required_event_count ?? 3} 个事件，后续需要 ${ev.data.subsequent_story_required_event_count ?? 10} 个事件`);
       } else if (ev.event === 'scanning') {
         logLine(log, 'info', ev.data.message || `可用事件：${ev.data.available_events ?? '?'}`);
       } else if (ev.event === 'generating') {
@@ -963,7 +963,7 @@ async function runStoryGeneration() {
           logLine(log, 'success', `完成：生成 ${stories.length} 篇，消费 ${ev.data.consumed_event_count ?? 0} 个事件，剩余 ${ev.data.remaining_event_count ?? 0} 个`);
           stories.forEach(item => logLine(log, 'info', `${item.life_stage_label || item.life_stage || '未知时期'}：${item.story_path}`));
         } else {
-          logLine(log, 'success', `完成：${ev.data.story_path}，消费 ${ev.data.consumed_event_count ?? 15} 个事件，剩余 ${ev.data.remaining_event_count ?? 0} 个`);
+          logLine(log, 'success', `完成：${ev.data.story_path}，消费 ${ev.data.consumed_event_count ?? 0} 个事件，剩余 ${ev.data.remaining_event_count ?? 0} 个`);
         }
         if (ev.data.status === 'partial_completed') logLine(log, 'error', '部分时期生成失败，可稍后再次触发');
         setStep('stories', 'done', '已生成');

@@ -177,11 +177,11 @@ python -m pytest tests/ --ignore=tests/e2e
 **流程**：
 1. 扫描 `events/` 目录，找出未消费的事件文件
 2. 按人生阶段分组（childhood / youth / middle_age / elderly）
-3. 每个阶段选出最早的 **15 个事件**（必须满 15 个才触发）
+3. 每个阶段独立判断生成门槛：首篇选最早 **3 个事件**，后续每篇选最早 **10 个事件**
 4. LLM 生成第一人称叙事（JSON: title + body + image_prompt + illustration_prompts）
 5. 保存为 `stories/{stage}_story_{timestamp}.md`
 6. 生成封面图 + 四宫格插图（并行调用图片服务）
-7. 标记 15 个事件为已消费（`.story_state.json`）
+7. 按本篇实际使用数量标记事件为已消费（`.story_state.json`）
 
 **图片生成约束**：
 - 主人公性别从 `user.md` 读取，注入到 image prompt
