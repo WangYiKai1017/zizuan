@@ -177,7 +177,7 @@ python -m pytest tests/ --ignore=tests/e2e
 **流程**：
 1. 扫描 `events/` 目录，找出未消费的事件文件
 2. 按人生阶段分组（childhood / youth / middle_age / elderly）
-3. 每个阶段独立判断生成门槛：首篇选最早 **3 个事件**，后续每篇选最早 **10 个事件**
+3. 每个阶段独立判断生成门槛：每篇选择最早 **10 个事件**
 4. LLM 生成第一人称叙事（JSON: title + body + image_prompt + illustration_prompts）
 5. 保存为 `stories/{stage}_story_{timestamp}.md`
 6. 生成封面图 + 四宫格插图（并行调用图片服务）
@@ -416,7 +416,7 @@ LANGFUSE_HOST=https://cloud.langfuse.com  # 或自部署地址
 | `src/agents/interview_agent.py` | 采访对话引擎 |
 | `src/agents/guided_initial_interview_controller.py` | 引导式采访控制器（64 题） |
 | `src/agents/kb_organizer_agent.py` | 知识库整理（去重/合并/矛盾检测） |
-| `src/agents/story_generation_agent.py` | 故事生成（15 事件 → 叙事 + 图） |
+| `src/agents/story_generation_agent.py` | 故事生成（每个时期 10 个事件 → 叙事 + 图） |
 | `src/agents/biography_outline_agent.py` | 传记大纲生成 |
 | `src/agents/biography_writing_agent.py` | 传记逐章写作 + 自审 |
 

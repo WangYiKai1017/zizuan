@@ -21,7 +21,7 @@ from src.services.observability import observe_step
 logger = logging.getLogger(__name__)
 
 
-FIRST_STORY_EVENT_COUNT = 3
+FIRST_STORY_EVENT_COUNT = 10
 SUBSEQUENT_STORY_EVENT_COUNT = 10
 # Backward-compatible default for callers that select a generic event batch.
 REQUIRED_EVENT_COUNT = SUBSEQUENT_STORY_EVENT_COUNT

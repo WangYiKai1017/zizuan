@@ -95,7 +95,7 @@ def test_select_ready_stage_events_groups_by_path_stage(tmp_path: Path) -> None:
     kb = tmp_path / "user001"
     for i in range(2):
         write_event(kb, f"events/childhood/event_{i:02d}.md", f"童年事件{i}", str(1950 + i))
-    for i in range(3):
+    for i in range(10):
         write_event(kb, f"events/youth/event_{i:02d}.md", f"青年事件{i}", str(1970 + i))
     for i in range(9):
         write_event(kb, f"events/middle_age/event_{i:02d}.md", f"中年事件{i}", str(1990 + i))
@@ -120,15 +120,16 @@ def test_select_ready_stage_events_groups_by_path_stage(tmp_path: Path) -> None:
     assert list(ready.keys()) == ["youth"]
     assert len(ready["youth"]) == FIRST_STORY_EVENT_COUNT
     assert ready["youth"][0].time == "1970"
-    assert ready["youth"][-1].time == "1972"
+    assert ready["youth"][-1].time == "1979"
     assert "childhood" not in ready
     assert "middle_age" not in ready
 
 
-def test_stage_threshold_is_three_for_first_story_and_ten_afterward(tmp_path: Path) -> None:
+def test_stage_threshold_is_ten_with_or_without_existing_story(tmp_path: Path) -> None:
     kb = tmp_path / "user001"
     agent = make_agent(kb)
 
+    assert FIRST_STORY_EVENT_COUNT == SUBSEQUENT_STORY_EVENT_COUNT == REQUIRED_EVENT_COUNT == 10
     assert agent.required_event_counts_by_stage()["elderly"] == FIRST_STORY_EVENT_COUNT
 
     stories_dir = kb / "stories"
@@ -174,7 +175,7 @@ def test_user_prompt_uses_actual_event_count(tmp_path: Path) -> None:
 
     prompt = agent._build_user_prompt(events, "elderly")
 
-    assert "下面 3 个来自老年时期的事件" in prompt
+    assert "下面 10 个来自老年时期的事件" in prompt
     assert "15 个" not in prompt
 
 
@@ -201,7 +202,7 @@ async def test_runner_reports_dynamic_thresholds_and_closes_failed_stream(
         "done",
     ]
     scanning = emitter.events[1]["data"]
-    assert scanning["available_event_counts_by_stage"]["childhood"] == 2
+    assert scanning["available_event_counts_by_stage"]["childhood"] == 9
     assert scanning["required_event_counts_by_stage"]["childhood"] == FIRST_STORY_EVENT_COUNT
     failed = emitter.events[2]["data"]
     assert failed["error_code"] == "INSUFFICIENT_EVENTS"

@@ -196,7 +196,7 @@ class StoryRunner(BaseAgentRunner):
                     await self.emitter.emit("failed", {
                         "status": "failed",
                         "error_code": "INSUFFICIENT_EVENTS",
-                        "message": "没有任何时期达到当前故事生成门槛（首篇 3 个事件，后续 10 个事件）",
+                        "message": "没有任何时期达到当前故事生成门槛（每篇 10 个事件）",
                         "first_story_required_events": FIRST_STORY_EVENT_COUNT,
                         "subsequent_story_required_events": SUBSEQUENT_STORY_EVENT_COUNT,
                         "required_event_counts_by_stage": required_event_counts,

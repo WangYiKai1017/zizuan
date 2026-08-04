@@ -178,7 +178,7 @@ async def list_stories(
 
 @router.post("/generate")
 async def generate_story(request: UserIdRequest):
-    """Generate stories for all life stages with at least 15 unconsumed events."""
+    """Generate stories for all life stages with at least 10 unconsumed events."""
     api_observation = start_api_observation(
         agent="story_generation",
         operation="generate",

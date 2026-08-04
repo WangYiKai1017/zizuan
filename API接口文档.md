@@ -544,7 +544,7 @@ data: {"message": "知识库整理完成"}
 
 ## 五、故事生成接口（任务式）
 
-故事生成接口由前端触发，并按人生阶段分别计算门槛：某个时期尚无故事时，选择最早的 3 个未消费事件生成首篇；该时期已有故事后，每篇选择最早的 10 个。故事保存成功后，实际使用的事件会写入 `stories/.story_state.json`，下次不再计入数量。
+故事生成接口由前端触发，并按人生阶段分别计算门槛：每个时期有至少 10 个未消费事件时，选择最早的 10 个生成一篇故事。故事保存成功后，实际使用的事件会写入 `stories/.story_state.json`，下次不再计入数量。
 
 ### 5.1 获取故事列表
 
@@ -575,11 +575,11 @@ data: {"message": "知识库整理完成"}
       "story_id": "childhood_story_20260605_100030",
       "story_path": "stories/childhood_story_20260605_100030.md",
       "title": "院子里的童年",
-      "content": "# 院子里的童年\n\n> 生成时间：2026-06-05T10:00:30+08:00\n> 来源时期：童年时期\n> 来源事件数：15\n\n故事正文...\n\n<!--\nsource_events:\n- events/childhood/出生.md\n-->\n",
+      "content": "# 院子里的童年\n\n> 生成时间：2026-06-05T10:00:30+08:00\n> 来源时期：童年时期\n> 来源事件数：10\n\n故事正文...\n\n<!--\nsource_events:\n- events/childhood/出生.md\n-->\n",
       "life_stage": "childhood",
       "life_stage_label": "童年时期",
       "created_at": "2026-06-05T10:00:30+08:00",
-      "source_event_count": 15,
+      "source_event_count": 10,
       "event_paths": ["events/childhood/出生.md"],
       "image_path": "stories/childhood_story_20260605_100030_cover.png",
       "illustration_paths": [
@@ -619,22 +619,22 @@ data: {"message": "知识库整理完成"}
 
 ```
 event: task_started
-data: {"user_id": "test_user002", "required_event_count": 10, "first_story_required_event_count": 3, "subsequent_story_required_event_count": 10, "timestamp": "2026-06-05T10:00:00+08:00"}
+data: {"user_id": "test_user002", "required_event_count": 10, "first_story_required_event_count": 10, "subsequent_story_required_event_count": 10, "timestamp": "2026-06-05T10:00:00+08:00"}
 
 event: scanning
-data: {"step": "scanning", "message": "扫描到 18 个未生成故事的事件，1 个时期已满足生成条件", "available_events": 18, "available_event_counts_by_stage": {"childhood": 3, "youth": 5, "middle_age": 5, "elderly": 5}, "required_event_counts_by_stage": {"childhood": 3, "youth": 10, "middle_age": 10, "elderly": 10}, "ready_life_stages": ["childhood"], "timestamp": "2026-06-05T10:00:01+08:00"}
+data: {"step": "scanning", "message": "扫描到 18 个未生成故事的事件，1 个时期已满足生成条件", "available_events": 18, "available_event_counts_by_stage": {"childhood": 10, "youth": 3, "middle_age": 3, "elderly": 2}, "required_event_counts_by_stage": {"childhood": 10, "youth": 10, "middle_age": 10, "elderly": 10}, "ready_life_stages": ["childhood"], "timestamp": "2026-06-05T10:00:01+08:00"}
 
 event: generating
-data: {"step": "generating", "message": "正在根据童年时期最早的 3 个事件生成故事...", "life_stage": "childhood", "life_stage_label": "童年时期", "selected_event_count": 3, "selected_event_paths": ["events/childhood/出生.md"], "timestamp": "2026-06-05T10:00:02+08:00"}
+data: {"step": "generating", "message": "正在根据童年时期最早的 10 个事件生成故事...", "life_stage": "childhood", "life_stage_label": "童年时期", "selected_event_count": 10, "selected_event_paths": ["events/childhood/出生.md"], "timestamp": "2026-06-05T10:00:02+08:00"}
 
 event: generating_image
 data: {"step": "generating_image", "message": "正在为童年时期故事生成封面和插图...", "story_id": "childhood_story_20260605_100030", "life_stage": "childhood", "life_stage_label": "童年时期", "illustration_count": 4, "timestamp": "2026-06-05T10:00:25+08:00"}
 
 event: saved
-data: {"step": "saved", "message": "故事已保存，事件消费状态已更新", "story_id": "childhood_story_20260605_100030", "story_path": "stories/childhood_story_20260605_100030.md", "life_stage": "childhood", "life_stage_label": "童年时期", "consumed_event_count": 3, "image_path": "stories/childhood_story_20260605_100030_cover.png", "illustration_paths": ["stories/childhood_story_20260605_100030_illust.png"], "timestamp": "2026-06-05T10:00:30+08:00"}
+data: {"step": "saved", "message": "故事已保存，事件消费状态已更新", "story_id": "childhood_story_20260605_100030", "story_path": "stories/childhood_story_20260605_100030.md", "life_stage": "childhood", "life_stage_label": "童年时期", "consumed_event_count": 10, "image_path": "stories/childhood_story_20260605_100030_cover.png", "illustration_paths": ["stories/childhood_story_20260605_100030_illust.png"], "timestamp": "2026-06-05T10:00:30+08:00"}
 
 event: completed
-data: {"status": "completed", "story_id": "childhood_story_20260605_100030", "story_path": "stories/childhood_story_20260605_100030.md", "life_stage": "childhood", "life_stage_label": "童年时期", "stories": [...], "failed_stages": [], "generated_story_count": 1, "consumed_event_count": 3, "remaining_event_count": 15, "timestamp": "2026-06-05T10:00:31+08:00"}
+data: {"status": "completed", "story_id": "childhood_story_20260605_100030", "story_path": "stories/childhood_story_20260605_100030.md", "life_stage": "childhood", "life_stage_label": "童年时期", "stories": [...], "failed_stages": [], "generated_story_count": 1, "consumed_event_count": 10, "remaining_event_count": 8, "timestamp": "2026-06-05T10:00:31+08:00"}
 
 event: done
 data: {"message": "故事生成完成"}
@@ -644,7 +644,7 @@ data: {"message": "故事生成完成"}
 
 ```
 event: failed
-data: {"status": "failed", "error_code": "INSUFFICIENT_EVENTS", "message": "没有任何时期达到当前故事生成门槛（首篇 3 个事件，后续 10 个事件）", "required_event_counts_by_stage": {"childhood": 10, "youth": 10, "middle_age": 10, "elderly": 3}, "available_event_counts_by_stage": {"childhood": 6, "youth": 8, "middle_age": 7, "elderly": 2}, "timestamp": "2026-06-05T10:00:01+08:00"}
+data: {"status": "failed", "error_code": "INSUFFICIENT_EVENTS", "message": "没有任何时期达到当前故事生成门槛（每篇 10 个事件）", "required_event_counts_by_stage": {"childhood": 10, "youth": 10, "middle_age": 10, "elderly": 10}, "available_event_counts_by_stage": {"childhood": 6, "youth": 8, "middle_age": 7, "elderly": 2}, "timestamp": "2026-06-05T10:00:01+08:00"}
 
 event: done
 data: {"message": "任务失败"}
@@ -1467,7 +1467,7 @@ function handleEvent(eventType, data) {
 | GET | `/api/interview/status/{user_id}/{session_id}` | JSON | 获取会话状态 |
 | POST | `/api/kb-organizer/run` | SSE | 启动知识库整理 |
 | GET | `/api/kb-organizer/result/{user_id}` | JSON | 获取整理结果 |
-| POST | `/api/stories/generate` | SSE | 各时期首篇消费 3 个事件，后续每篇消费 10 个 |
+| POST | `/api/stories/generate` | SSE | 各时期每满 10 个未消费事件生成一篇故事 |
 | POST | `/api/biography/outline/generate` | SSE | 生成/更新大纲 |
 | GET | `/api/biography/outline/{user_id}` | JSON | 获取当前大纲 |
 | PUT | `/api/biography/outline/{user_id}/chapters/{chapter_id}/confirm` | JSON | 确认章节 |
